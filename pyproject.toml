@@ -1,0 +1,137 @@
+
+# This file establishes the info needed to install baderkit via pip, how to
+# upload it to PyPI, and how to run python packages like pytest and coverage.
+
+# For more information on this file and how to make similar ones, see:
+#    https://setuptools.pypa.io/en/latest/userguide/pyproject_config.html
+#    https://github.com/pypa/sampleproject
+
+# -----------------------------------------------------------------------------
+
+[build-system]
+# These are the assumed default build requirements from pip:
+# https://pip.pypa.io/en/stable/reference/pip/#pep-517-and-518-support
+requires = ["setuptools>=64.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+# -----------------------------------------------------------------------------
+
+[project]
+
+# published name for pip install to use
+name="elf-analyzer"
+
+# Versions should comply with PEP 440:
+# https://www.python.org/dev/peps/pep-0440/
+# https://semver.org/
+version="0.0.0"
+
+# Maintainer info
+authors = [{name = "Sam M. Weaver", email = "sammweaver@gmail.com"}]
+
+# Info for PyPI
+description="ElfAnalyzer automatically separates and characterizes the Electron Localization Function defined on a regular grid."
+readme = "README.md"
+
+# General name for our LICENSE file
+license = {text = "BSD 3-Clause License"}
+
+# Classifiers help users find your project by categorizing it.
+# For a list of valid classifiers, see https://pypi.org/classifiers/
+classifiers=[
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
+    "Programming Language :: Python :: 3.11",
+    "Operating System :: OS Independent",
+]
+
+# Specify which Python versions are supported.
+requires-python=">=3.10"
+
+# This field lists other packages that your project depends on to run.
+dependencies=[
+    # Core dependencies
+    "baderkit",
+    "networkx",
+    "pandas>=2.1.0",
+    "pymatgen>=2022.1.9",
+    "scipy>=1.7.2",
+    "numba>=0.59.0",
+    "typer>=0.6.1", # For CLI
+    # Extra (smaller) dependencies & utilities
+    "rich>=11.0", # for coloring CLI outputs and progress bars
+]
+
+# optional dependencies that are not installed by default
+[project.optional-dependencies]
+# For using the webapp
+webapp = [
+    "streamlit>=1.40.0", # for web GUI
+    "pyvista[jupyter]>=0.44.0" # for plotting
+]
+# For development and testing. Taken straight from simmate
+DEV = [
+    "streamlit>=1.40.0", # for web GUI
+    "pyvista[jupyter]>=0.44.0",
+    "pytest",
+    "black",
+    "isort",
+    "mkdocs",
+    "mkdocs-material",
+    "mkdocstrings-python",
+#    "mkdocs_autorefs",
+]
+
+# Link to our homepage. Use github for now.
+[project.urls]
+repository = "https://github.com/SWeav02/elf-analyzer"
+
+# Register command line interface
+# [project.scripts]
+# baderkit = "baderkit.command_line.base:baderkit_app"
+
+# -----------------------------------------------------------------------------
+
+# Indicate which directory the source coude is in
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# All files that aren't *.py need to be defined explicitly. Don't "automate"
+# this to grab all files because this could break installation. This can
+# be effectively the opposite of .gitignore.
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-data]
+baderkit = [
+    "**/*.md",
+    "**/*.rst",
+    "**/*.json",
+    "**/*.csv",
+    "**/*.yaml",
+    "**/*.html",
+    "**/*.svg",
+    "**/*.toml",
+    "**/*.css",
+    "**/*.js",
+]
+# Note, the default is to include everything, but I don't want to ship test
+# files. I could switch this to use exclude-package-data in the future.
+# https://setuptools.pypa.io/en/latest/userguide/datafiles.html#exclude-package-data
+
+# -----------------------------------------------------------------------------
+# Section for pytests
+# -----------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+# -----------------------------------------------------------------------------
+
+# isort is a tool for organizing imports at the top of python files. By default,
+# it conflicts with the black formatter we use, so we need to configure it here.
+
+[tool.isort]
+profile = "black"
+
+# -----------------------------------------------------------------------------

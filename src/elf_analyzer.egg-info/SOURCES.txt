@@ -1,0 +1,16 @@
+LICENSE.txt
+README.md
+pyproject.toml
+src/elf_analyzer/__init__.py
+src/elf_analyzer.egg-info/PKG-INFO
+src/elf_analyzer.egg-info/SOURCES.txt
+src/elf_analyzer.egg-info/dependency_links.txt
+src/elf_analyzer.egg-info/requires.txt
+src/elf_analyzer.egg-info/top_level.txt
+src/elf_analyzer/core/__init__.py
+src/elf_analyzer/core/elf_analyzer.py
+src/elf_analyzer/core/utilities/__init__.py
+src/elf_analyzer/core/utilities/bifurcation_graph.py
+src/elf_analyzer/core/utilities/ionic_radii.py
+src/elf_analyzer/core/utilities/union_find.py
+src/elf_analyzer/plotting/__init__.py
