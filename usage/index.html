@@ -1,0 +1,760 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://sweav02.github.io/elf-analyzer/usage/">
+      
+      
+        <link rel="prev" href="../background/">
+      
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.14">
+    
+    
+      
+        <title>Basic Usage - ElfAnalyzer Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.342714a4.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../css/mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="deep-purple" data-md-color-accent="deep-purple">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#the-elfanalyzertoolkit-class" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="ElfAnalyzer Documentation" class="md-header__button md-logo" aria-label="ElfAnalyzer Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            ElfAnalyzer Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Basic Usage
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="deep-purple" data-md-color-accent="deep-purple"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17 7H7a5 5 0 0 0-5 5 5 5 0 0 0 5 5h10a5 5 0 0 0 5-5 5 5 0 0 0-5-5m0 8a3 3 0 0 1-3-3 3 3 0 0 1 3-3 3 3 0 0 1 3 3 3 3 0 0 1-3 3"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="deep-purple" data-md-color-accent="deep-purple"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17 6H7c-3.31 0-6 2.69-6 6s2.69 6 6 6h10c3.31 0 6-2.69 6-6s-2.69-6-6-6m0 10H7c-2.21 0-4-1.79-4-4s1.79-4 4-4h10c2.21 0 4 1.79 4 4s-1.79 4-4 4M7 9c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/SWeav02/elf-analyzer" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8M97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="ElfAnalyzer Documentation" class="md-nav__button md-logo" aria-label="ElfAnalyzer Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    ElfAnalyzer Documentation
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/SWeav02/elf-analyzer" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8M97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Home
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Installation
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../background/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Background
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    Basic Usage
+    
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    Basic Usage
+    
+  </span>
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#about" class="md-nav__link">
+    <span class="md-ellipsis">
+      About
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#initializing-the-class" class="md-nav__link">
+    <span class="md-ellipsis">
+      Initializing the Class
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#getting-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      Getting Results
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#bifurcation-graphs" class="md-nav__link">
+    <span class="md-ellipsis">
+      Bifurcation Graphs
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#bifurcation-plots" class="md-nav__link">
+    <span class="md-ellipsis">
+      Bifurcation Plots
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#labeled-structures" class="md-nav__link">
+    <span class="md-ellipsis">
+      Labeled Structures
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#about" class="md-nav__link">
+    <span class="md-ellipsis">
+      About
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#initializing-the-class" class="md-nav__link">
+    <span class="md-ellipsis">
+      Initializing the Class
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#getting-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      Getting Results
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#bifurcation-graphs" class="md-nav__link">
+    <span class="md-ellipsis">
+      Bifurcation Graphs
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#bifurcation-plots" class="md-nav__link">
+    <span class="md-ellipsis">
+      Bifurcation Plots
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#labeled-structures" class="md-nav__link">
+    <span class="md-ellipsis">
+      Labeled Structures
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="the-elfanalyzertoolkit-class">The ElfAnalyzerToolkit Class<a class="headerlink" href="#the-elfanalyzertoolkit-class" title="Permanent link">&para;</a></h1>
+<h2 id="about">About<a class="headerlink" href="#about" title="Permanent link">&para;</a></h2>
+<p>The first step of the BadELF algorithm is to determine whether there are bare electrons in the system and, if so, where they are located. In the original paper this was done by using relatively simple distance and ELF value cutoffs. Since then, the <code>ElfAnalyzerToolkit</code> method has evolved to be more rigorous. Using exclusively the ELF, charge density, and crystal structure, the <code>ElfAnalyzerToolkit</code> class now automatically detects not only bare electrons, but atom cores, atom shells, covalent bonds, metallic features, and lone-pairs.</p>
+<p>While it was originally conceived to support the BadELF algorithm, the current ElfAnalyzerToolkit class can be used as a general tool for analyzing the ELF, providing considerably more information on each ELF feature than the BadElfToolkit class.</p>
+<p>Explanations for each parameter can be found as a subsection of the <code>elf_analyzer_kwargs</code> section on our <a href="/parameters.md">parameters page</a></p>
+<h2 id="initializing-the-class">Initializing the Class<a class="headerlink" href="#initializing-the-class" title="Permanent link">&para;</a></h2>
+<p>The <code>ElfAnalyzerToolkit</code> class can be initialized from files or by providing the ELF and charge density grids as Grid class objects. The Grid class inherits from pymatgen's VolumetricData class, and in principle allows for the use of codes other than VASP.</p>
+<div class="tabbed-set tabbed-alternate" data-tabs="1:2"><input checked="checked" id="__tabbed_1_1" name="__tabbed_1" type="radio" /><input id="__tabbed_1_2" name="__tabbed_1" type="radio" /><div class="tabbed-labels"><label for="__tabbed_1_1">from file</label><label for="__tabbed_1_2">from grid class</label></div>
+<div class="tabbed-content">
+<div class="tabbed-block">
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">simmate.apps.badelf.core</span><span class="w"> </span><span class="kn">import</span> <span class="n">ElfAnalyzerToolkit</span>
+
+<span class="n">finder</span> <span class="o">=</span> <span class="n">ElfAnalyzerToolkit</span><span class="o">.</span><span class="n">from_files</span><span class="p">(</span>
+    <span class="n">directory</span><span class="o">=</span><span class="s2">&quot;/path/to/folder&quot;</span><span class="p">,</span> <span class="c1"># This is the directory where the files are located</span>
+    <span class="c1"># The parameters below are optional</span>
+    <span class="n">elf_file</span><span class="o">=</span><span class="s2">&quot;partitioning_filename&quot;</span><span class="p">,</span> <span class="c1"># default ELFCAR</span>
+    <span class="n">charge_file</span><span class="o">=</span><span class="s2">&quot;charge_filename&quot;</span><span class="p">,</span> <span class="c1"># default CHGCAR</span>
+    <span class="n">separate_spin</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span> <span class="c1"># Treats spin-up and spin-down separately</span>
+    <span class="n">ignore_low_pseudopotentials</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span> <span class="c1"># ignores issues with missing core electrons</span>
+    <span class="n">downscale_resolution</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1200</span><span class="p">,</span> <span class="c1"># Downscales the ELF and charge density unless set to None</span>
+<span class="p">)</span>
+</code></pre></div>
+</div>
+<div class="tabbed-block">
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">simmate.apps.badelf.core</span><span class="w"> </span><span class="kn">import</span> <span class="n">ElfAnalyzerToolkit</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">simmate.apps.bader.toolkit</span><span class="w"> </span><span class="kn">import</span> <span class="n">Grid</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
+
+<span class="n">directory</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="s2">&quot;path/to/folder&quot;</span><span class="p">)</span> <span class="c1"># indicates the path to the folder where BadELF should run</span>
+<span class="n">elf_grid</span> <span class="o">=</span> <span class="n">Grid</span><span class="o">.</span><span class="n">from_file</span><span class="p">(</span><span class="s2">&quot;path/to/partitioning_file&quot;</span><span class="p">)</span>
+<span class="n">charge_grid</span> <span class="o">=</span> <span class="n">Grid</span><span class="o">.</span><span class="n">from_file</span><span class="p">(</span><span class="s2">&quot;path/to/partitioning_file&quot;</span><span class="p">)</span>
+
+<span class="n">finder</span> <span class="o">=</span> <span class="n">ElfAnalyzerToolkit</span><span class="p">(</span>
+    <span class="n">directory</span><span class="o">=</span><span class="n">directory</span><span class="p">,</span>
+    <span class="n">elf_grid</span><span class="o">=</span><span class="n">partitioning_grid</span><span class="p">,</span>
+    <span class="n">charge_grid</span><span class="o">=</span><span class="n">charge_grid</span><span class="p">,</span>
+    <span class="c1"># The parameters below are optional</span>
+    <span class="n">separate_spin</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span> <span class="c1"># treats spin-up and spin-down separately</span>
+    <span class="n">ignore_low_pseudopotentials</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span> <span class="c1"># ignores issues with missing core electrons        </span>
+    <span class="n">downscale_resolution</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1200</span><span class="p">,</span> <span class="c1"># Downscales the ELF and charge density unless set to None</span>
+<span class="p">)</span>
+</code></pre></div>
+</div>
+</div>
+</div>
+<h2 id="getting-results">Getting Results<a class="headerlink" href="#getting-results" title="Permanent link">&para;</a></h2>
+<p>Once the class is initialized, all of the results can be obtained:</p>
+<div class="highlight"><pre><span></span><code><span class="n">results</span> <span class="o">=</span> <span class="n">finder</span><span class="o">.</span><span class="n">get_full_analysis</span><span class="p">(</span>
+    <span class="n">resolution</span><span class="o">=</span><span class="mf">0.01</span><span class="p">,</span>
+    <span class="n">include_lone_pairs</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+    <span class="n">metal_depth_cutoff</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span>
+    <span class="n">min_covalent_angle</span><span class="o">=</span><span class="mi">135</span><span class="p">,</span>
+    <span class="n">min_covalent_bond_ratio</span><span class="o">=</span><span class="mf">0.4</span><span class="p">,</span>
+    <span class="n">shell_depth</span><span class="o">=</span><span class="mf">0.05</span><span class="p">,</span>
+    <span class="n">electride_elf_min</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span>
+    <span class="n">electride_depth_min</span><span class="o">=</span><span class="mf">0.2</span><span class="p">,</span>
+    <span class="n">electride_charge_min</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span>
+    <span class="n">electride_volume_min</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span>
+    <span class="n">electride_radius_min</span><span class="o">=</span><span class="mf">0.3</span><span class="p">,</span>
+    <span class="n">radius_refine_method</span><span class="o">=</span><span class="s2">&quot;linear&quot;</span><span class="p">,</span>
+    <span class="n">write_results</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span>
+</code></pre></div>
+<p>This will return a dictionary with keys for a bifurcation graph, bifurcation plot, and a labeled structure. If the <code>separate_spin=True</code> tag was used, there will be two of each of these for the up and down cases. Descriptions for each of these are below.</p>
+<h2 id="bifurcation-graphs">Bifurcation Graphs<a class="headerlink" href="#bifurcation-graphs" title="Permanent link">&para;</a></h2>
+<p>The BifurcationGraph class is a custom network class built off of <a href="https://networkx.org/">networkx</a>. The graphs are constructed first during the process, and contain all of the most important information. Each node represents a unique topological domain at various ELF values. Reducible features are connected to their child irreducible features by the edges. The graphs can be obtain as follows:</p>
+<div class="tabbed-set tabbed-alternate" data-tabs="2:2"><input checked="checked" id="__tabbed_2_1" name="__tabbed_2" type="radio" /><input id="__tabbed_2_2" name="__tabbed_2" type="radio" /><div class="tabbed-labels"><label for="__tabbed_2_1">spin polarized</label><label for="__tabbed_2_2">not polarized</label></div>
+<div class="tabbed-content">
+<div class="tabbed-block">
+<div class="highlight"><pre><span></span><code><span class="n">graph_up</span> <span class="o">=</span> <span class="n">results</span><span class="p">[</span><span class="s2">&quot;graph_up&quot;</span><span class="p">]</span>
+<span class="n">graph_down</span> <span class="o">=</span> <span class="n">results</span><span class="p">[</span><span class="s2">&quot;graph_down&quot;</span><span class="p">]</span>
+</code></pre></div>
+</div>
+<div class="tabbed-block">
+<div class="highlight"><pre><span></span><code><span class="n">graph</span> <span class="o">=</span> <span class="n">results</span><span class="p">[</span><span class="s2">&quot;graph&quot;</span><span class="p">]</span>
+</code></pre></div>
+</div>
+</div>
+</div>
+<h2 id="bifurcation-plots">Bifurcation Plots<a class="headerlink" href="#bifurcation-plots" title="Permanent link">&para;</a></h2>
+<p>The bifurcation plots are <a href="https://plotly.com/graphing-libraries/">Plotly</a> <code>graph_objects</code> constructed directly from the <code>BifurcationGraph</code>s above. They can be obtained as follows:</p>
+<div class="tabbed-set tabbed-alternate" data-tabs="3:2"><input checked="checked" id="__tabbed_3_1" name="__tabbed_3" type="radio" /><input id="__tabbed_3_2" name="__tabbed_3" type="radio" /><div class="tabbed-labels"><label for="__tabbed_3_1">spin polarized</label><label for="__tabbed_3_2">not polarized</label></div>
+<div class="tabbed-content">
+<div class="tabbed-block">
+<div class="highlight"><pre><span></span><code>    <span class="n">plot_up</span> <span class="o">=</span> <span class="n">results</span><span class="p">[</span><span class="s2">&quot;plot_up&quot;</span><span class="p">]</span>
+    <span class="n">plot_down</span> <span class="o">=</span> <span class="n">results</span><span class="p">[</span><span class="s2">&quot;plot_down&quot;</span><span class="p">]</span>
+</code></pre></div>
+</div>
+<div class="tabbed-block">
+<div class="highlight"><pre><span></span><code>    <span class="n">plot</span> <span class="o">=</span> <span class="n">results</span><span class="p">[</span><span class="s2">&quot;plot&quot;</span><span class="p">]</span>
+</code></pre></div>
+</div>
+</div>
+</div>
+<p>If <code>write_results=True</code>, the plots will be written to a .html file which can be directly viewed in your browser. Alternatively, many python IDEs will also allow you to view the plot directly with</p>
+<div class="highlight"><pre><span></span><code><span class="n">plot</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+</code></pre></div>
+<p>This should generate a plot similar to those on the <a href="../background/">background page</a>.</p>
+<p>These plots are the easiest way to visualize the ELF features in your system. The Y-axis represents the ELF value at which each domain first separates from its parent domain. Hovering over each node in the graph will provide additional information about the domain it represents. For reducible domains, this includes information like the number of atoms it surrounds, and their structure index. For irreducible domains it includes things such as charge, volume, ELF maximum, depth, distance to nearest atom, and more. We recommend loading your ELF into a program such as VESTA or OVITO and different ELF values with the plot to help get used to what it represents. </p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>The charge provided by this method is identical to running the <code>BadElfToolkit</code> with the <code>zero-flux</code> algorithm. This matches a more traditional ELF topology analysis, rather than separating atoms with planes.</p>
+</div>
+<h2 id="labeled-structures">Labeled Structures<a class="headerlink" href="#labeled-structures" title="Permanent link">&para;</a></h2>
+<p>The labeled structures are <a href="https://pymatgen.org/">pymatgen</a> <code>Structure</code> objects with 'dummy' atoms representing different types of ELF features. This is primarily used by the <code>BadElfToolkit</code> for BadELF analysis, but is also useful for visualization.</p>
+<p>To get the labeled structures:</p>
+<div class="tabbed-set tabbed-alternate" data-tabs="4:2"><input checked="checked" id="__tabbed_4_1" name="__tabbed_4" type="radio" /><input id="__tabbed_4_2" name="__tabbed_4" type="radio" /><div class="tabbed-labels"><label for="__tabbed_4_1">spin polarized</label><label for="__tabbed_4_2">not polarized</label></div>
+<div class="tabbed-content">
+<div class="tabbed-block">
+<div class="highlight"><pre><span></span><code>    <span class="n">labeled_structure_up</span> <span class="o">=</span> <span class="n">results</span><span class="p">[</span><span class="s2">&quot;structure_up&quot;</span><span class="p">]</span>
+    <span class="n">labeled_structure_down</span> <span class="o">=</span> <span class="n">results</span><span class="p">[</span><span class="s2">&quot;structure_down&quot;</span><span class="p">]</span>
+</code></pre></div>
+</div>
+<div class="tabbed-block">
+<div class="highlight"><pre><span></span><code>    <span class="n">labeled_structure</span> <span class="o">=</span> <span class="n">results</span><span class="p">[</span><span class="s2">&quot;structure&quot;</span><span class="p">]</span>
+</code></pre></div>
+</div>
+</div>
+</div>
+<p>If the structure has any non-atomic features, they will be labeled with Dummy atoms. The following labels are used:</p>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Label</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Covalent Bond</td>
+<td>"Z"</td>
+</tr>
+<tr>
+<td>Lone-Pair</td>
+<td>"Lp"</td>
+</tr>
+<tr>
+<td>Metal</td>
+<td>"M"</td>
+</tr>
+<tr>
+<td>Electride</td>
+<td>"E"</td>
+</tr>
+<tr>
+<td>Other Bare Electron</td>
+<td>"Le"</td>
+</tr>
+</tbody>
+</table>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Admittedly, some of these labels are not intuitive. This is due to pymatgen's Structure object limiting dummy atom labels to symbols that don't start with letters shared by an element (e.g. "Cov" isn't available because of C and Co)</p>
+</div>
+<p>The labeled structures can then be written to files for visualization in software such as VESTA or OVITO.</p>
+<div class="tabbed-set tabbed-alternate" data-tabs="5:2"><input checked="checked" id="__tabbed_5_1" name="__tabbed_5" type="radio" /><input id="__tabbed_5_2" name="__tabbed_5" type="radio" /><div class="tabbed-labels"><label for="__tabbed_5_1">spin polarized</label><label for="__tabbed_5_2">not polarized</label></div>
+<div class="tabbed-content">
+<div class="tabbed-block">
+<div class="highlight"><pre><span></span><code>    <span class="n">labeled_structure_up</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;my_structure_up.cif&quot;</span><span class="p">,</span> <span class="s2">&quot;cif&quot;</span><span class="p">)</span>
+    <span class="n">labeled_structure_down</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;my_structure_down.cif&quot;</span><span class="p">,</span> <span class="s2">&quot;cif&quot;</span><span class="p">)</span>
+</code></pre></div>
+</div>
+<div class="tabbed-block">
+<div class="highlight"><pre><span></span><code>    <span class="n">labeled_structure</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;my_structure.cif&quot;</span><span class="p">,</span> <span class="s2">&quot;cif&quot;</span><span class="p">)</span>
+</code></pre></div>
+</div>
+</div>
+</div>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      <script id="__config" type="application/json">{"base": "..", "features": ["content.code.annotate", "content.code.copy"], "search": "../assets/javascripts/workers/search.d50fe291.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.13a4f30d.min.js"></script>
+      
+    
+  </body>
+</html>
