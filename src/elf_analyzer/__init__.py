@@ -6,7 +6,7 @@ import logging
 
 from rich.logging import RichHandler
 
-from .core import ElfAnalyzer
+from .core import ElfAnalyzer, SpinElfAnalyzer
 
 __version__ = importlib.metadata.version("baderkit")
 

@@ -50,17 +50,19 @@ classifiers=[
 requires-python=">=3.10"
 
 # This field lists other packages that your project depends on to run.
+# Because most dependencies are shared with baderkit, I'm basically using
+# baderkit to set dependency ranges.
 dependencies=[
     # Core dependencies
-    "baderkit",
+    "baderkit>=0.2.2",
     "networkx",
-    "pandas>=2.1.0",
-    "pymatgen>=2022.1.9",
-    "scipy>=1.7.2",
-    "numba>=0.59.0",
-    "typer>=0.6.1", # For CLI
+    "pandas",
+    "pymatgen",
+    "scipy",
+    "numba",
+    "typer", # For CLI
     # Extra (smaller) dependencies & utilities
-    "rich>=11.0", # for coloring CLI outputs and progress bars
+    "rich>", # for coloring CLI outputs and progress bars
 ]
 
 # optional dependencies that are not installed by default

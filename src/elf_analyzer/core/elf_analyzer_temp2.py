@@ -1,11 +1,5 @@
 # -*- coding: utf-8 -*-
 
-"""
-Contains the main class for running elf topology analysis.
-"""
-
-# -*- coding: utf-8 -*-
-
 import logging
 import math
 from functools import cached_property
@@ -29,33 +23,47 @@ from elf_analyzer.core.utilities import UnionFind, BifurcationGraph, IonicRadiiT
 class ElfAnalyzer:
     """
     A class for finding electride sites from an ELFCAR.
+
+    Args:
+        grid : Grid
+            A BadELF app Grid instance made from an ELFCAR.
+
+        directory : Path
+            Path the the directory to write files from
     """
-    
-    _spin_polarized = False
 
     def __init__(
         self,
         elf_grid: Grid,
         charge_grid: Grid,
+        directory: Path,
+        separate_spin: bool = False,
         ignore_low_pseudopotentials: bool = False,
         downscale_resolution: int = 200,
         bader_method: str = None,
-        method_arguments: dict = {}
     ):
         self.elf_grid = elf_grid.copy()
         self.charge_grid = charge_grid.copy()
+        self.directory = directory
         self.ignore_low_pseudopotentials = ignore_low_pseudopotentials
         self.bader_method = bader_method
-        self.method_arguments = method_arguments
         if downscale_resolution is not None:
             self.downscale_resolution = downscale_resolution
         else:
             self.downscale_resolution = elf_grid.voxel_resolution
+        # check if this is a spin polarized calculation and if the user wants
+        # to pay attention to this.
+        if elf_grid.is_spin_polarized and separate_spin:
+            self.spin_polarized = True
+            self._elf_grid_up, self._elf_grid_down = elf_grid.split_to_spin()
+            self._charge_grid_up, self._charge_grid_down = charge_grid.split_to_spin(
+                "charge"
+            )
+        else:
+            self.spin_polarized = False
+            self._elf_grid_up, self._elf_grid_down = None, None
+            self._charge_grid_up, self._charge_grid_down = None, None
 
-    ###########################################################################
-    # Main Properties
-    ###########################################################################
-    
     @property
     def structure(self) -> Structure:
         """
@@ -64,21 +72,6 @@ class ElfAnalyzer:
         structure = self.elf_grid.structure.copy()
         structure.add_oxidation_state_by_guess()
         return structure
-    
-    @cached_property
-    def labeled_structure(self) -> Structure:
-        return self.get_labeled_structure(self.bifurcation_graph)
-    
-    @cached_property
-    def bader(self) -> Bader:
-        """
-        Returns a Bader object
-        """
-        return Bader(
-            charge_grid=self.charge_grid, 
-            reference_grid=self.elf_grid,
-            method=self.bader_method
-            )
 
     @cached_property
     def atom_coordination_envs(self) -> list:
@@ -86,28 +79,177 @@ class ElfAnalyzer:
         Gets the coordination environment for the atoms in the system
         using CrystalNN
         """
-        # TODO: Add crystalNN kwargs?
         cnn = CrystalNN(distance_cutoffs=None)
         neighbors = cnn.get_all_nn_info(self.structure)
         return neighbors
-    
+
+    @staticmethod
+    def get_shared_feature_neighbors(structure: Structure) -> NDArray:
+        """
+        For each covalent bond or metallic feature in a dummy atom labeled
+        structure, returns a list of nearest atom neighbors.
+        """
+        # We want to get the atoms and electride sites that are closest to each
+        # shared feature. However, we don't want to find any nearby shared features
+        # as neighbors.
+        # To do this we will remove all of the shared dummy atoms, and create
+        # temporary structures with only one of the shared dummy atoms at a time.
+        shared_feature_indices = []
+        cleaned_structure = structure.copy()
+        for symbol in ["Z", "M", "Le", "Lp"]:
+            if not symbol in cleaned_structure.symbol_set:
+                continue
+            cleaned_structure.remove_species([symbol])
+            shared_feature_indices.extend(structure.indices_from_symbol(symbol))
+        shared_feature_indices = np.array(shared_feature_indices)
+        shared_feature_indices.sort()
+        # We will be using the indices of the cleaned structure to note neighbors,
+        # so these must match the original structure. We assert that here
+        assert all(
+            cleaned_structure[i].species == structure[i].species
+            for i in range(len(cleaned_structure))
+        ), "Provided structure must list atoms and electride dummy atoms first"
+
+        # Replace any electrides with "He" so that CrystalNN doesn't throw an error
+        if "E" in cleaned_structure.symbol_set:
+            cleaned_structure.replace_species({"E": "He"})
+        # for each index, we append a dummy atom ("He" because its relatively small)
+        # then get the nearest neighbors
+        cnn = CrystalNN(distance_cutoffs=None)
+        all_neighbors = []
+        for idx in shared_feature_indices:
+            neigh_indices = []
+            # Add this dummy atom to the temporary structure
+            frac_coords = structure[idx].frac_coords
+            temp_structure = cleaned_structure.copy()
+            temp_structure.append("He", frac_coords)
+            # Get the nearest neighbors to this dummy atom
+            nn = cnn.get_nn(temp_structure, -1)
+            # Get the index for each neighboras a list, then append this list
+            # to our full list. Note that it is important that these indices be
+            # the same as in the original structure, so atoms and electrides must
+            # come before shared electrons in the provided structure.
+            for n in nn:
+                neigh_indices.append(n.index)
+            all_neighbors.append(neigh_indices)
+        return all_neighbors
+
+    def get_atom_en_diff_and_cn(self, site: int) -> list([float, int]):
+        """
+        Uses the coordination environment of an atom to get the EN diff
+        between it and it's neighbors as well as its coordination number.
+        This is useful for guessing which radius to use.
+        """
+        # get the neighbors for this site and its electronegativity
+        neigh_list = self.atom_coordination_envs[site]
+        site_en = self.structure.species[site].X
+        # create a variable for storing the largest EN difference
+        max_en_diff = 0
+        for neigh_dict in neigh_list:
+            # get the EN for each neighbor and calculate the difference
+            neigh_site = neigh_dict["site_index"]
+            neigh_en = self.structure.species[neigh_site].X
+            en_diff = site_en - neigh_en
+            # if the difference is larger than the current stored one, replace
+            # it.
+            if abs(en_diff) > max_en_diff:
+                max_en_diff = en_diff
+        # return the en difference and number of neighbors
+        return max_en_diff, len(neigh_list)
+
+    @property
+    def site_voxel_coords(self) -> np.array:
+        frac_coords = self.structure.frac_coords
+        vox_coords = self.elf_grid.get_voxel_coords_from_frac(frac_coords)
+        return vox_coords.astype(int)
+
     @cached_property
-    def bifurcation_graph(self) -> BifurcationGraph:
-        return self._get_bifurcation_graph(
-            self.bader, 
-            self.elf_grid, 
-            self.charge_grid, 
-            **self.method_arguments)
-    
+    def site_sphere_voxel_coords(self) -> list:
+        site_sphere_coords = []
+        for vox_coord in self.site_voxel_coords:
+            nearby_voxels = self.elf_grid.get_voxels_in_radius(0.05, vox_coord)
+            site_sphere_coords.append(nearby_voxels)
+        return site_sphere_coords
+
     @cached_property
-    def bifurcation_plot(self) -> go.Figure:
-        return self._get_bifurcation_plot(self.bifurcation_graph)
-    
-    
-    ###########################################################################
-    # Core Graph Construction
-    ###########################################################################
-    
+    def bader_up(self) -> Bader:
+        """
+        Returns a Bader object
+        """
+        if self.spin_polarized:
+            return Bader(
+                charge_grid=self._charge_grid_up, 
+                reference_grid=self._elf_grid_up, 
+                method=self.bader_method
+                )
+        else:
+            return Bader(
+                charge_grid=self.charge_grid, 
+                reference_grid=self.elf_grid,
+                method=self.bader_method
+                )
+
+    @cached_property
+    def bader_down(self) -> Bader:
+        """
+        Returns a Bader object
+        """
+        if self.spin_polarized:
+            return Bader(
+                charge_grid=self._charge_grid_down, 
+                reference_grid=self._elf_grid_down, 
+                method=self.bader_method
+                )
+        else:
+            return None
+        
+    def get_bifurcation_graphs(
+        self,
+        **cutoff_kwargs,
+    ):
+        """
+        This will construct a bifurcation graph using a networkx
+        DiGraph. Each node will contain information on whether it is
+        reducible/irreducible, atomic/valent, etc.
+
+        If the calculation is spin polarized, two graphs will be returned,
+        one for each spin
+        """
+        if self.spin_polarized:
+            elf_grid = self._elf_grid_up
+            charge_grid = self._charge_grid_up
+        else:
+            elf_grid = self.elf_grid
+            charge_grid = self.charge_grid
+        # Get either the spin up graph or combined spin graph
+        graph_up = self._get_bifurcation_graph(
+            self.bader_up,
+            elf_grid,
+            charge_grid,
+            **cutoff_kwargs,
+        )
+        if self.spin_polarized:
+            # Check if there's any difference in each spin. If not, we only need
+            # to run this once. We set the tolerance such that all ELF values must
+            # be within 0.0001 of each other
+            if np.allclose(
+                self._elf_grid_up.total, self._elf_grid_down.total, rtol=0, atol=1e-4
+            ):
+                logging.info("Spin grids are found to be equal. Using spin up only.")
+                graph_down = graph_up.copy()
+            else:
+                # Get the spin down graph
+                graph_down = self._get_bifurcation_graph(
+                    self.bader_down,
+                    self._elf_grid_down,
+                    self._charge_grid_down,
+                    **cutoff_kwargs,
+                )
+            return graph_up, graph_down
+        else:
+            # We don't use spin polarized, so return the one graph.
+            return graph_up
+        
     def _get_important_elf_domains(
         self,
         elf_grid: Grid,
@@ -138,6 +280,18 @@ class ElfAnalyzer:
             maxima_voxel_coords[:, 2]
         ]
         
+        # # get the connection points for each basin
+        # connections_array = find_connections(
+        #     labeled_array=basin_labels,
+        #     data=elf_data,
+        #     basin_num=len(maxima_voxel_coords),
+        #     neighbor_transforms=self.elf_grid.voxel_26_neighbors[0],
+        #     )
+        # # Find all connection pairs
+        # connection_mask = connections_array > 0
+        # connection_pairs = np.argwhere(connections_array)
+        # connection_elfs = connections_array[connection_mask]
+        # breakpoint()
         # Generate all 26 neighboring voxel shifts
         neighbor_shifts = list(itertools.product([-1, 0, 1], repeat=3))
         neighbor_shifts.remove((0, 0, 0))  # Remove the (0, 0, 0) self-shift
@@ -620,6 +774,20 @@ class ElfAnalyzer:
                     breakpoint()
         return graph
     
+    def get_valence_summary(self, graph: BifurcationGraph()) -> dict:
+        """
+        Takes in a bifurcation graph and summarizes any valence basin
+        information as a nested dictionary where each key is the node
+        index and each value is a dictionary of useful information
+        """
+        summary = {}
+        for i in graph.nodes:
+            node = graph.nodes[i]
+            basin_type = node.get("type", None)
+            if basin_type == "val":
+                summary[i] = node
+        return summary
+
     def _mark_atomic(
         self,
         graph: BifurcationGraph(),
@@ -760,6 +928,45 @@ class ElfAnalyzer:
                     )
 
         return graph
+    
+    def _get_atomic_radii(
+            self, 
+            graph: BifurcationGraph(), 
+            bader: Bader ,
+            elf_grid: Grid,
+            radius_refine_method: str,
+            ):
+        valence_summary = self.get_valence_summary(graph)
+        # We will need to get radii from the ELF. To do this, we need a labeled
+        # pybader result to pass to our PartitioningToolkit
+        frac_coords = bader.basin_maxima_frac
+        temp_structure = self.structure.copy()
+        for feature_idx, attributes in valence_summary.items():
+            if attributes["subtype"] == "covalent":
+                species = "Z"
+            elif attributes["subtype"] == "lone-pair":
+                # species = "Lp"
+                # We want to consider lone-pairs as part of the atom so we continue
+                continue
+            else:
+                species = "X"
+            for basin_idx in attributes["basins"]:
+                frac_coord = frac_coords[basin_idx]
+                temp_structure.append(species, frac_coord)
+        
+        # recalculate the atoms for our bader object
+        bader_labeled = bader.copy()
+        bader_labeled.run_atom_assignment(structure=temp_structure)
+
+        partitioning = IonicRadiiTools(elf_grid, bader_labeled)
+        # TODO Ideally, these radii are stored at a class level so that they
+        # can be passed to the BadElfToolkit class for summary. However, this
+        # requires knowledge of if this is spin-up/spin-down which I currently
+        # don't have stored at this level
+        radii = partitioning.get_elf_ionic_radii(
+            refine_method=radius_refine_method, labeled_structure=temp_structure
+        )
+        return radii
     
     def _correct_far_shell_features(
             self,
@@ -1010,7 +1217,7 @@ class ElfAnalyzer:
         Takes in a bifurcation graph and labels valence features that
         are obviously metallic or covalent
         """
-        valence_summary = self._get_valence_summary(graph)
+        valence_summary = self.get_valence_summary(graph)
         # TODO: Many of these features could be symmetric. I should only perform
         # each action for one of these symmetric features and assign the result
         # to all of them.
@@ -1174,7 +1381,7 @@ class ElfAnalyzer:
             bader: Bader,
             ):
         basin_radii = bader.basin_surface_distances
-        valence_summary = self._get_valence_summary(graph)
+        valence_summary = self.get_valence_summary(graph)
         for feature_idx, attributes in valence_summary.items():
             basins = attributes["basins"]
             feature_radius = basin_radii[basins].min()
@@ -1194,7 +1401,7 @@ class ElfAnalyzer:
         0 to 1 and is the combination of several different metrics:
         ELF value, charge, depth, volume, and atom distance.
         """
-        valence_summary = self._get_valence_summary(graph)
+        valence_summary = self.get_valence_summary(graph)
 
         for feature_idx, attributes in tqdm(valence_summary.items(), desc="Calculating bare electron character"):
             # We want to get a metric of how "bare" each feature is. To do this,
@@ -1209,7 +1416,7 @@ class ElfAnalyzer:
             # the maximum amount should be 1. Otherwise, the value could be up
             # to 2. We make a guess at what the value should be here
             charge = attributes["charge"]
-            if self._spin_polarized:
+            if self.spin_polarized:
                 max_value = 1
             else:
                 if 0 < charge <= 1.1:
@@ -1349,7 +1556,7 @@ class ElfAnalyzer:
         # BUG-FIX On occasion, a metal feature will sit very close to being along
         # an atom-atom bond, but will sit well outside that atoms ELF radius. In
         # these cases they will be mislabeled as covalent. We correct for that here
-        valence_summary = self._get_valence_summary(graph)
+        valence_summary = self.get_valence_summary(graph)
         for feature_idx, attributes in valence_summary.items():
             dist_beyond_atom = attributes["dist_beyond_atom"]
             feature_subtype = attributes["subtype"]
@@ -1366,7 +1573,7 @@ class ElfAnalyzer:
             electride_volume_min: float = 10,
             electride_radius_min: float = 0.3,
                                     ) -> BifurcationGraph():
-        valence_summary = self._get_valence_summary(graph)
+        valence_summary = self.get_valence_summary(graph)
         # create an array of our conditions to check against
         conditions = np.array(
             [
@@ -1449,17 +1656,49 @@ class ElfAnalyzer:
             for edge_companion in edge_companions:
                 graph.add_edge(i, edge_companion)
         return graph
-    ###########################################################################
-    # Post Graph Construction
-    ###########################################################################
-    
-    def _get_bifurcation_plot(
+
+    def get_bifurcation_plots(
+        self,
+        write_plot: bool = False,
+        plot_name="bifurcation_plot.html",
+        **cutoff_kwargs,
+    ):
+        """
+        Plots bifurcation plots automatically. Graphs will be generated
+        using the provided resolution. If the provided
+        ELF and Charge Density are spin polarized, two plots will be
+        generated.
+        """
+        # remove .html if its at the end of the plot name
+        plot_name = plot_name.replace(".html", "")
+
+        if self.spin_polarized:
+            graph_up, graph_down = self.get_bifurcation_graphs(**cutoff_kwargs)
+            plot_up = self.get_bifurcation_plot(
+                graph_up, write_plot, f"{plot_name}_up.html"
+            )
+            plot_down = self.get_bifurcation_plot(
+                graph_down, write_plot, f"{plot_name}_down.html"
+            )
+            return plot_up, plot_down
+        else:
+            graph = self.get_bifurcation_graphs(**cutoff_kwargs)
+            return self.get_bifurcation_plot(graph, write_plot, plot_name)
+
+    def get_bifurcation_plot(
         self,
         graph: BifurcationGraph(),
+        write_plot=False,
+        plot_name="bifurcation_plot.html",
     ):
         """
         Returns a plotly figure
         """
+        # remove .html if its at the end of the plot name
+        plot_name = plot_name.replace(".html", "")
+        # then add .html to ensure its there
+        plot_name += ".html"
+
         indices = []
         end_indices = []
         # X position is determined by the ELF value at which the feature appears.
@@ -1640,9 +1879,54 @@ class ElfAnalyzer:
                 showticklabels=False,
             ),
         )
+
+        if write_plot:
+            fig.write_html(self.directory / plot_name)
         return fig
 
-    def get_labeled_structure(
+    def get_labeled_structures(
+        self,
+        include_lone_pairs: bool = False,
+        include_shared_features: bool = True,
+        **cutoff_kwargs,
+    ):
+        """
+        Returns a structure with dummy atoms at electride and shared
+        electron sites. Off atom basins are assigned using the bifurcation
+        graph method. See the .get_bifurcation_plot method for more info.
+
+        Dummy atoms will have the following labels:
+        e: electride, le: bare electron, m: metallic feature, z: covalent bond,
+        lp: lone-pair
+
+        If spin porized files are provided, returns two structures.
+        """
+        if self.spin_polarized:
+            graph_up, graph_down = self.get_bifurcation_graphs(
+                **cutoff_kwargs,
+            )
+            structure_up = self._get_labeled_structure(
+                graph_up,
+                include_lone_pairs,
+                include_shared_features,
+            )
+            structure_down = self._get_labeled_structure(
+                graph_down,
+                include_lone_pairs,
+                include_shared_features,
+            )
+            return structure_up, structure_down
+        else:
+            graph = self.get_bifurcation_graphs(
+                **cutoff_kwargs,
+            )
+            return self._get_labeled_structure(
+                graph,
+                include_lone_pairs,
+                include_shared_features,
+            )
+
+    def _get_labeled_structure(
         self,
         graph: BifurcationGraph(),
         include_lone_pairs: bool = False,
@@ -1651,7 +1935,7 @@ class ElfAnalyzer:
     ):
         # First, we get the valence features for this graph and create a
         # structure that we will add features to
-        valence_features = self._get_valence_summary(graph)
+        valence_features = self.get_valence_summary(graph)
         structure = self.structure.copy()
         structure.remove_oxidation_states()
         structure_index_to_node = {}
@@ -1699,233 +1983,103 @@ class ElfAnalyzer:
         for node, index in node_to_index.items():
             networkx.set_node_attributes(graph, {node: {"feature_structure_index":index}})
 
-        logging.info(f"{len(electride_indices)} bare electrons found")
+        logging.info(f"{len(electride_indices)} electride sites found")
         if len(other_indices) > 0:
             f"{len(other_indices)} shared sites found"
 
         return sorted_structure
-    
-    ###########################################################################
-    # Utilities
-    ###########################################################################
-    @property
-    def _site_voxel_coords(self) -> np.array:
-        frac_coords = self.structure.frac_coords
-        vox_coords = self.elf_grid.get_voxel_coords_from_frac(frac_coords)
-        return vox_coords.astype(int)
-    
-    @cached_property
-    def _site_sphere_voxel_coords(self) -> list:
-        site_sphere_coords = []
-        for vox_coord in self._site_voxel_coords:
-            nearby_voxels = self.elf_grid.get_voxels_in_radius(0.05, vox_coord)
-            site_sphere_coords.append(nearby_voxels)
-        return site_sphere_coords
-    
-    def _get_atomic_radii(
-            self, 
-            graph: BifurcationGraph(), 
-            bader: Bader ,
-            elf_grid: Grid,
-            radius_refine_method: str,
-            ):
-        valence_summary = self._get_valence_summary(graph)
-        # We will need to get radii from the ELF. To do this, we need a labeled
-        # pybader result to pass to our PartitioningToolkit
-        frac_coords = bader.basin_maxima_frac
-        temp_structure = self.structure.copy()
-        for feature_idx, attributes in valence_summary.items():
-            if attributes["subtype"] == "covalent":
-                species = "Z"
-            elif attributes["subtype"] == "lone-pair":
-                # species = "Lp"
-                # We want to consider lone-pairs as part of the atom so we continue
-                continue
-            else:
-                species = "X"
-            for basin_idx in attributes["basins"]:
-                frac_coord = frac_coords[basin_idx]
-                temp_structure.append(species, frac_coord)
-        
-        # recalculate the atoms for our bader object
-        bader_labeled = bader.copy()
-        bader_labeled.run_atom_assignment(structure=temp_structure)
-
-        partitioning = IonicRadiiTools(elf_grid, bader_labeled)
-        # TODO Ideally, these radii are stored at a class level so that they
-        # can be passed to the BadElfToolkit class for summary. However, this
-        # requires knowledge of if this is spin-up/spin-down which I currently
-        # don't have stored at this level
-        radii = partitioning.get_elf_ionic_radii(
-            refine_method=radius_refine_method, labeled_structure=temp_structure
-        )
-        return radii
-    
-    @staticmethod
-    def _get_shared_feature_neighbors(structure: Structure) -> NDArray:
-        """
-        For each covalent bond or metallic feature in a dummy atom labeled
-        structure, returns a list of nearest atom neighbors.
-        """
-        # We want to get the atoms and electride sites that are closest to each
-        # shared feature. However, we don't want to find any nearby shared features
-        # as neighbors.
-        # To do this we will remove all of the shared dummy atoms, and create
-        # temporary structures with only one of the shared dummy atoms at a time.
-        shared_feature_indices = []
-        cleaned_structure = structure.copy()
-        for symbol in ["Z", "M", "Le", "Lp"]:
-            if not symbol in cleaned_structure.symbol_set:
-                continue
-            cleaned_structure.remove_species([symbol])
-            shared_feature_indices.extend(structure.indices_from_symbol(symbol))
-        shared_feature_indices = np.array(shared_feature_indices)
-        shared_feature_indices.sort()
-        # We will be using the indices of the cleaned structure to note neighbors,
-        # so these must match the original structure. We assert that here
-        assert all(
-            cleaned_structure[i].species == structure[i].species
-            for i in range(len(cleaned_structure))
-        ), "Provided structure must list atoms and electride dummy atoms first"
-
-        # Replace any electrides with "He" so that CrystalNN doesn't throw an error
-        if "E" in cleaned_structure.symbol_set:
-            cleaned_structure.replace_species({"E": "He"})
-        # for each index, we append a dummy atom ("He" because its relatively small)
-        # then get the nearest neighbors
-        cnn = CrystalNN(distance_cutoffs=None)
-        all_neighbors = []
-        for idx in shared_feature_indices:
-            neigh_indices = []
-            # Add this dummy atom to the temporary structure
-            frac_coords = structure[idx].frac_coords
-            temp_structure = cleaned_structure.copy()
-            temp_structure.append("He", frac_coords)
-            # Get the nearest neighbors to this dummy atom
-            nn = cnn.get_nn(temp_structure, -1)
-            # Get the index for each neighboras a list, then append this list
-            # to our full list. Note that it is important that these indices be
-            # the same as in the original structure, so atoms and electrides must
-            # come before shared electrons in the provided structure.
-            for n in nn:
-                neigh_indices.append(n.index)
-            all_neighbors.append(neigh_indices)
-        return all_neighbors
-
-    def _get_atom_en_diff_and_cn(self, site: int) -> list([float, int]):
-        """
-        Uses the coordination environment of an atom to get the EN diff
-        between it and it's neighbors as well as its coordination number.
-        This is useful for guessing which radius to use.
-        """
-        # get the neighbors for this site and its electronegativity
-        neigh_list = self.atom_coordination_envs[site]
-        site_en = self.structure.species[site].X
-        # create a variable for storing the largest EN difference
-        max_en_diff = 0
-        for neigh_dict in neigh_list:
-            # get the EN for each neighbor and calculate the difference
-            neigh_site = neigh_dict["site_index"]
-            neigh_en = self.structure.species[neigh_site].X
-            en_diff = site_en - neigh_en
-            # if the difference is larger than the current stored one, replace
-            # it.
-            if abs(en_diff) > max_en_diff:
-                max_en_diff = en_diff
-        # return the en difference and number of neighbors
-        return max_en_diff, len(neigh_list)
-    
-    def _get_valence_summary(self, graph: BifurcationGraph()) -> dict:
-        """
-        Takes in a bifurcation graph and summarizes any valence basin
-        information as a nested dictionary where each key is the node
-        index and each value is a dictionary of useful information
-        """
-        summary = {}
-        for i in graph.nodes:
-            node = graph.nodes[i]
-            basin_type = node.get("type", None)
-            if basin_type == "val":
-                summary[i] = node
-        return summary
 
     @classmethod
     def from_vasp(
         cls,
-        elf_file: str | Path = "ELFCAR",
-        charge_file: str | Path = "CHGCAR",
+        directory: Path = Path("."),
+        elf_file: str = "ELFCAR",
+        charge_file: str = "CHGCAR",
         **kwargs,
     ):
         """
         Creates a BadElfToolkit instance from the requested partitioning file
-        and charge file in VASP format.
+        and charge file.
+
+        Args:
+            directory (Path):
+                The path to the directory that the badelf analysis
+                will be located in.
+            elf_file (str):
+                The filename of the file containing the ELF. Must be a VASP
+                ELFCAR type file.
+            charge_file (str):
+                The filename of the file containing the charge information. Must
+                be a VASP CHGCAR file.
+            **kwargs:
+                Any other keyword arguments to pass to the ElfAnalysisToolkit
+
+        Returns:
+            A ElfAnalyzerToolkit instance.
         """
 
-        elf_grid = Grid.from_vasp(elf_file)
-        charge_grid = Grid.from_vasp(charge_file)
+        elf_grid = Grid.from_vasp(directory / elf_file)
+        charge_grid = Grid.from_vasp(directory / charge_file)
         return cls(
             elf_grid=elf_grid,
             charge_grid=charge_grid,
+            directory=directory,
             **kwargs,
         )
-    
-    @classmethod
-    def from_cube(
-        cls,
-        elf_file: str | Path,
-        charge_file: str | Path,
-        **kwargs,
-    ):
-        """
-        Creates a BadElfToolkit instance from the requested partitioning file
-        and charge file in .cube format.
-        """
 
-        elf_grid = Grid.from_cube(elf_file)
-        charge_grid = Grid.from_cube(charge_file)
-        return cls(
-            elf_grid=elf_grid,
-            charge_grid=charge_grid,
-            **kwargs,
-        )
-    
-    @classmethod
-    def from_dynamic(
-        cls,
-        elf_file: str | Path,
-        charge_file: str | Path,
-        **kwargs,
-    ):
+    def get_full_analysis(self, write_results: bool = True, **kwargs):
         """
-        Creates a BadElfToolkit instance from the requested partitioning file
-        and charge file. Attempts to guess the file format from the name of the
-        files.
+        Gets the BifurcationGraphs, plots, and labeled structures for
+        the entire analysis and returns them as a dict object.
         """
+        if self.spin_polarized:
+            graph_up, graph_down = self.get_bifurcation_graphs(**kwargs)
+            # bader_up, bader_down = self.bader_up, self.bader_down
+            plot_up = self.get_bifurcation_plot(
+                graph_up, write_plot=write_results, plot_name="bifurcation_plot_up"
+            )
+            plot_down = self.get_bifurcation_plot(
+                graph_down, write_plot=write_results, plot_name="bifurcation_plot_down"
+            )
+            structure_up = self._get_labeled_structure(graph_up, **kwargs)
+            structure_down = self._get_labeled_structure(graph_down, **kwargs)
+            if write_results:
+                # write structures
+                structure_up.to(self.directory / "labeled_up.cif", "cif")
+                structure_down.to(self.directory / "labeled_down.cif", "cif")
 
-        elf_grid = Grid.from_cube(elf_file)
-        charge_grid = Grid.from_cube(charge_file)
-        return cls(
-            elf_grid=elf_grid,
-            charge_grid=charge_grid,
-            **kwargs,
-        )
-    
-    ###########################################################################
-    # Methods for writing results
-    ###########################################################################
-    def write_bifurcation_plot(
-            self,
-            filename: str | Path,
-            ):
-        plot = self.bifurcation_plot
-        # make sure path is a Path object
-        filename = Path(filename)
-        # add .html if filename doesn't include it
-        filename_html = filename.with_suffix(".html")
-        plot.write_html(filename_html)
+            return {
+                "graph_up": graph_up,
+                "graph_down": graph_down,
+                "plot_up": plot_up,
+                "plot_down": plot_down,
+                "structure_up": structure_up,
+                "structure_down": structure_down,
+            }
+
+        else:
+            graph = self.get_bifurcation_graphs(**kwargs)
+            # bader = self.bader_up
+            plot_name = "bifurcation_plot"
+            if "plot_name" in kwargs.keys():
+                plot_name = kwargs["plot_name"]
+            plot = self.get_bifurcation_plot(
+                graph, write_plot=write_results, plot_name=plot_name
+            )
+            structure = self._get_labeled_structure(graph, **kwargs)
+            if write_results:
+                # write structures
+                structure.to(self.directory / "labeled.cif", fmt="cif")
+            return {
+                "graph": graph,
+                "plot": plot,
+                "structure": structure,
+            }
     
     def write_feature_basins(
             self, 
+            bader: Bader, 
+            graph: BifurcationGraph(), 
             nodes: list, 
             file_pre:str = "ELFCAR"
             ):
@@ -1933,8 +2087,6 @@ class ElfAnalyzer:
         For a give list of nodes, writes the bader basins associated with
         each.
         """
-        bader = self.bader
-        graph = self.bifurcation_graph
         for node in nodes:
             basins = graph.nodes[node]["basins"]
             basin_labeled_voxels = bader.basin_labels.copy()
@@ -1945,8 +2097,20 @@ class ElfAnalyzer:
             grid = Grid(self.structure, data={"total":empty_grid})
             grid.write_file(f"{file_pre}_{node}")
     
-    def write_valence_basins(self):
-        graph = self.bifurcation_graph
-        bader = self.bader
-        nodes = self._get_valence_summary(graph)
-        self.write_feature_basins(bader, graph, nodes, file_pre="ELFCAR")
+    def write_valence_basins(self, results: dict):
+        if self.spin_polarized:
+            graph_down = results["graph_down"]
+            bader_down = self.bader_down
+            nodes_down = self.get_valence_summary(graph_down)
+            self.write_feature_basins(bader_down, graph_down, nodes_down, file_pre="ELFCAR_down")
+            # get graph for spin up
+            graph_up = results["graph_up"]
+            bader_up = self.bader_up
+            nodes_up = self.get_valence_summary(graph_up)
+            self.write_feature_basins(bader_up, graph_up, nodes_up, file_pre="ELFCAR_up")
+        
+        else:
+            graph = results["graph"]
+            bader = self.bader_up
+            nodes = self.get_valence_summary(graph)
+            self.write_feature_basins(bader, graph, nodes, file_pre="ELFCAR")
