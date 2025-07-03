@@ -103,6 +103,9 @@ class ElfAnalyzer:
     def bifurcation_plot(self) -> go.Figure:
         return self._get_bifurcation_plot(self.bifurcation_graph)
     
+    ###########################################################################
+    # TODO: Additional Convenience Items
+    ###########################################################################
     
     ###########################################################################
     # Core Graph Construction
