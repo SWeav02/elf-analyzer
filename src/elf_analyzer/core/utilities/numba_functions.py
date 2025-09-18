@@ -1,42 +1,53 @@
 # -*- coding: utf-8 -*-
 
+import math
+
 import numpy as np
 from numba import njit, prange, types
 from numpy.typing import NDArray
 
-@njit(parallel=True, cache=True)
+from baderkit.core.methods.shared_numba import wrap_point
+
+@njit(cache=True)
 def find_connections(
         labeled_array: NDArray[np.int64],
         data: NDArray[np.float64],
+        edge_voxels,
         basin_num: np.int64,
         neighbor_transforms: NDArray[np.int64],
         ):
     nx, ny, nz = labeled_array.shape
-    # create a 2D array for tracking connections
+    # create a 2D array for tracking connections.
+    # TODO: We could potentially reduce this by using lists as basins will never
+    # include connections to basins with lower indices
     connection_array = np.zeros((basin_num, basin_num), dtype=np.float64)
-    # loop over each voxel in parallel
-    for i in prange(nx):
-        for j in range(ny):
-            for k in range(nz):
-                # Get this voxels label and elf value
-                label = labeled_array[i, j, k]
-                elf_value = data[i,j,k]
-                # iterate over the neighboring voxels
-                for shift_index, shift in enumerate(neighbor_transforms):
-                    ii = (i + shift[0]) % nx  # Loop around box
-                    jj = (j + shift[1]) % ny
-                    kk = (k + shift[2]) % nz
-                    # get neighbors label
-                    neigh_label = labeled_array[ii, jj, kk]
-                    # if any label is different, the current voxel is an edge.
-                    # Note this in our edge array and break
-                    if neigh_label != label:
-                        # This voxel is an edge, and this neighbor belongs to a
-                        # different basin
-                        # NOTE: If we imagine scanning the ELF from high to low,
-                        # the first value at which these voxels connect is the
-                        # lower of the two.
-                        neigh_elf = data[ii,jj,kk]
-                        if neigh_elf < elf_value and neigh_elf > connection_array[label, neigh_label]:
-                            connection_array[label, neigh_label] = lower_elf
+    # loop over each edge voxel
+    for i, j, k in edge_voxels:
+        # get this points elf value and basin label
+        elf_value = data[i,j,k]
+        label = labeled_array[i,j,k]
+        # loop over the neighbors
+        for si, sj, sk in neighbor_transforms:
+            # wrap points
+            ii, jj, kk = wrap_point(i + si, j + sj, k + sk, nx, ny, nz)
+            # get the label at this point
+            neigh_label = labeled_array[ii,jj,kk]
+            # skip if this is part of the same basin
+            if neigh_label == label:
+                continue
+            # otherwise, get the value at this neighbor
+            neigh_elf_value = data[ii,jj,kk]
+            # the value at which these two points 'connect' when visualizing the
+            # isosurface is the lower value.
+            lower_elf = min(elf_value, neigh_elf_value)
+            # we want to find the highest connection point for this pair of basins,
+            # which we store in our connection array. The highest value for each
+            # pair is located at index n, m where n is the lower label value
+            lower_label = min(label, neigh_label)
+            higher_label = max(label, neigh_label)
+            # compare our values and if this is higher, update it
+            if lower_elf > connection_array[lower_label, higher_label]:
+                connection_array[lower_label, higher_label] = lower_elf
+    
+    # return connection array
     return connection_array
