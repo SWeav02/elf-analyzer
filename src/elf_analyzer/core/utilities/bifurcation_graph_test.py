@@ -33,12 +33,8 @@ class Node:
         if parent is None:
             assert bifurcation_graph._root_node is None, "Only one root node allowed per graph. Additional nodes must provide a parent."
             bifurcation_graph._root_node = self
-            # The root has no ancestors
-            self._ancestors = []
         else:
             parent._children.append(self)
-            # Add the parent to it's own set of ancestors
-            self._ancestors = [parent] + parent.ancestors
         
         # set parent
         self._parent = parent
@@ -81,8 +77,6 @@ class Node:
         self._parent = new_parent
         # add this node to the new parent's children
         new_parent._children.append(self)
-        # update this nodes ancestors
-        self._ancestors = [new_parent] + new_parent.ancestors
     
     @property
     def children(self) -> list[Node]:
@@ -97,7 +91,13 @@ class Node:
         
     @property
     def ancestors(self) -> list[Node]:
-        return self._ancestors
+        all_parents = []
+        current_parent = self.parent
+        while current_parent is not None:
+            all_parents.append(current_parent)
+            current_parent = current_parent.parent
+        all_parents.reverse()
+        return all_parents
 
     @property
     def deep_children(self) -> list[Node]:
@@ -119,11 +119,12 @@ class Node:
             assert len(self.children) == 1, "Root can only be deleted if it has a single child"
             self.bifurcation_graph._root_node = self.children[0].index
             self.children[0]._parent = None
-            self.children[0]._ancestors = []
         else:
             # assign all children to parent
             for child in self.children:
                 child.parent = self.parent
+            # remove this node from the current parent's children
+            self.parent._children = [i for i in self.parent._children if i is not self]
         # delete this node
         graph = self.bifurcation_graph
         graph._nodes = [i for i in graph._nodes if i is not self]
@@ -157,7 +158,7 @@ class BifurcationGraph:
     
     @property
     def root_node(self) -> Node:
-        return self[self._root_node]
+        return self._root_node
     
     @property
     def nodes(self) -> list[Node]:

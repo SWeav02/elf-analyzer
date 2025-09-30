@@ -120,7 +120,7 @@ class ElfAnalyzer(Bader):
     @property
     def bifurcation_plot(self) -> go.Figure:
         if self._bifurcation_plot is None:
-            self._get_bifurcation_plot()
+            self._bifurcation_plot = self._get_bifurcation_plot()
         return self._bifurcation_plot
     
     @property
@@ -271,7 +271,6 @@ class ElfAnalyzer(Bader):
             len(self.basin_maxima_frac),
             neighbor_shifts,
             )
-        
         # also add the maximum value of each basin as the point it 'connects' to
         # itself
         basin_maxima = self.basin_maxima_ref_values
@@ -393,11 +392,22 @@ class ElfAnalyzer(Bader):
             downscaled_label_grid = label_grid
         self._downscaled_labels = downscaled_label_grid.total
     
+    @staticmethod
+    def _get_depth_3d(node):
+        # I do this in a couple places so I decided its worth making a
+        # convenience function
+        # NOTE: There will always be an ancestor that is infinite, because
+        # the root is infinite
+        ancestors = node.ancestors
+        for ancestor in ancestors:
+            if ancestor.is_infinite:
+                break
+        return node.disappears_at - ancestor.disappears_at
     
     def _assign_node_properties(self):
         # get bifurcation graph and bader object
         graph = self.bifurcation_graph
-        labels = self.basin_labels
+        # labels = self.basin_labels
         # get downscaled graphs
         downscaled_labels = self.downscaled_labels
         downscaled_reference_grid = self.downscaled_reference_grid
@@ -446,27 +456,22 @@ class ElfAnalyzer(Bader):
                 # set new attributes for this node
                 node.atoms = atoms
                 node.is_infinite = is_infinite
+                node.depth = node.disappears_at - node.appears_at
 
             else:
                 # This is an irreducible domain.
                 # We want to store data relavent to the type of domain it might
                 # be.
-                # First we get a mask representing where this feature is
-                basin_mask = np.isin(labels, basins)
-                max_elf = np.max(self.reference_grid.total[basin_mask])
-                depth = max_elf - parent.disappears_at
+                # First we get the maximum value at which this feature exists which
+                # is just its maximum.
+                disappears_at = np.max(self.basin_maxima_ref_values[basins])
+                # Now we get its "depth" which corresponds to the range of values
+                # where this feature exists.
+                depth = disappears_at - parent.disappears_at
                 # We also want to mark a type of depth corresponding to the
                 # point where this feature connected with an infinite domain.
-                # NOTE: There will always be an ancestor that is infinite, because
-                # the root is infinite
-                ancestors = node.ancestors
-                for ancestor in ancestors:
-                    try:
-                        if ancestor.is_infinite:
-                            break
-                    except:
-                        breakpoint()
-                depth_3d = max_elf - ancestor.disappears_at
+
+                depth_3d = self._get_depth_3d(node)
                 # Using this, we can find the average frac coords of the attractors
                 # in this basin
                 # TODO: Check if this is necessary. With the updated Bader package
@@ -504,22 +509,20 @@ class ElfAnalyzer(Bader):
                 ]
 
                 # Now we update this node with the information we gathered
-                try:
-                    node.max_elf = max_elf
-                    node.depth = depth
-                    node.depth_3d = depth_3d
-                    node.charge = charge
-                    node.volume = volume
-                    node.atom_distance = distance
-                    node.nearest_atom = nearest_atom
-                    node.nearest_atom_type = self.structure[nearest_atom].specie.symbol
-                    node.frac_coords = frac_coord
-                except:
-                    breakpoint()
+                node.disappears_at = disappears_at
+                node.depth = depth
+                node.depth_3d = depth_3d
+                node.charge = charge
+                node.volume = volume
+                node.atom_distance = distance
+                node.nearest_atom = nearest_atom
+                node.nearest_atom_type = self.structure[nearest_atom].specie.symbol
+                node.frac_coords = frac_coord
+
         return graph
     
     def _clean_reducible_nodes(self):
-        # TODO: Is this still necessary?
+        # TODO: Is this still necessary with the updated BaderKit package?
         graph = self.bifurcation_graph
         # nodes_to_remove = []
         for node in graph:
@@ -624,7 +627,7 @@ class ElfAnalyzer(Bader):
                     # We actually want the depth to the point where the basin connects
                     # to a reducible domain surrounding the atom of interest. This is
                     # the point where this node split.
-                    basin_shell_depth = child.max_elf - node.disappears_at
+                    basin_shell_depth = child.disappears_at - node.disappears_at
 
                     if basin_shell_depth < self.shell_depth:
                         basin_subtype = "shell"
@@ -877,24 +880,37 @@ class ElfAnalyzer(Bader):
         atom_distance = 50
         volume = 0
         charge = 0
-        max_elf = 0
+        disappears_at = 0
+        appears_at = 50
         nearest_atom = -1
         nearest_atom_type = None
         frac_coords = None
-        depth = 0
-        depth_3d = 0
         # update all of our shell characteristics
         for child in nodes:
-            nearest_atom = child.nearest_atom
-            nearest_atom_type = child.nearest_atom_type
+            # update atom distance if better than other children
+            if child.atom_distance < atom_distance:
+                atom_distance = child.atom_distance
+                nearest_atom = child.nearest_atom
+                nearest_atom_type = child.nearest_atom_type
+            
+            # add basins to our list
             basins.extend(child.basins)
-            atom_distance = min(atom_distance, child.atom_distance)
+            
+            # add volume and charge to our total
             volume += child.volume
             charge += child.charge
-            max_elf = max(max_elf, child.max_elf)
-            frac_coords = child.frac_coords
-            depth = max(depth, child.depth)
-            depth_3d = max(depth_3d, child.depth_3d)
+            
+            # update the value the feature disappears at if its
+            # greater.
+            if child.disappears_at > disappears_at:
+                disappears_at = child.disappears_at
+                frac_coords = child.frac_coords
+            
+            # update the value the feature appears at if lower. This
+            # should get overwritten if we delete the parent node
+            # anyways
+            if child.appears_at < appears_at:
+                appears_at = child.appears_at
 
         # Add the attributes
         node = nodes[0]
@@ -904,12 +920,15 @@ class ElfAnalyzer(Bader):
         node.atom_distance = atom_distance
         node.volume = volume
         node.charge = charge
-        node.max_elf = max_elf
+        node.appears_at = appears_at
+        node.disappears_at = disappears_at
         node.nearest_atom = nearest_atom
         node.nearest_atom_type = nearest_atom_type
-        node.depth = depth
-        node.depth_3d = depth_3d
         node.frac_coords = frac_coords
+        
+        # Recalculate depth
+        node.depth = node.disappears_at - node.appears_at
+        node.depth_3d = self._get_depth_3d(node)
 
         children_to_remove = nodes[1:]
         # delete all of the unused nodes
@@ -982,12 +1001,20 @@ class ElfAnalyzer(Bader):
                 # This node is now the parent of a single shell feature. We replace
                 # it.
                 child = children[0]
-                # recalculate depth and assign it to the child
-                parent_elf = parent.disappears_at
-                child.depth = child.max_elf - parent_elf
-                child.reducible = True
+                # BUG-FIX: assign the value this parent appears at to the
+                # child and recalculate depth
+                child.appears_at = parent.appears_at
+                new_depth = child.disappears_at - child.appears_at
+                child.depth = new_depth                
+                
+                child.reducible = True # We will need to check for this later
+                # BUG-FIX: assign the child the atoms in the parent
+                child.atoms = parent.atoms
+                child.is_infinite = parent.is_infinite
                 # delete the parent
                 parent.remove()
+                # recalculate depth 3d
+                child.depth_3d = self._get_depth_3d(node)
 
     
     def _mark_feature_radii(self):
@@ -1017,7 +1044,7 @@ class ElfAnalyzer(Bader):
             # get a final value from 0 to 1.
             # First, the ELF value already ranges from 0 to 1, with 1 being more
             # localized. We don't need to alter this in any way.
-            elf_contribution = node.max_elf
+            elf_contribution = node.disappears_at
 
             # next, we look at the charge. If we are using a spin polarized result
             # the maximum amount should be 1. Otherwise, the value could be up
@@ -1184,7 +1211,7 @@ class ElfAnalyzer(Bader):
             # we have a bare electron. We check each condition
             condition_test = np.array(
                 [
-                    node.max_elf,
+                    node.disappears_at,
                     node.depth_3d,  # Note we use the depth to an infinite connection rather than true depth
                     node.charge,
                     node.volume,
@@ -1206,7 +1233,6 @@ class ElfAnalyzer(Bader):
     # Post Graph Construction
     ###########################################################################
     
-    # TODO: This method still needs to be updated further
     def _get_bifurcation_plot(self):
         """
         Returns a plotly figure
@@ -1219,17 +1245,28 @@ class ElfAnalyzer(Bader):
         labels = []
         types = []
         for i, node in enumerate(self.bifurcation_graph):
-            if not node.reducible:
+            indices.append(node.key)
+            if not node.reducible or getattr(node, "basin_subtype", None) == "shell":
                 if node.depth > 0.01:
-                    Xn1.append(node.max_elf)
+                    Xn1.append(node.disappears_at)
                 else:
-                    Xn1.append(node.max_elf - node.depth + 0.01)
+                    Xn1.append(node.disappears_at - node.depth + 0.01)
                 end_indices.append(i)
-                # Get label
-                label = f"""type: {node.basin_subtype}\ndepth: {node.depth}\ndepth to inf connection: {node.depth_3d}\nmax elf: {node.max_elf}\ncharge: {node.charge}\nvolume: {node.volume}\natom distance: {round(node.atom_distance,4)}\nnearest atom index: {node.nearest_atom}\nnearest atom type: {node.nearest_atom_type}"""
+                # Get label with rounded values
+                label = f"""type: {node.basin_subtype}
+depth: {round(node.depth, 4)}
+depth to inf connection: {round(node.depth_3d, 4)}
+max elf: {round(node.disappears_at, 4)}
+charge: {round(node.charge, 4)}
+volume: {round(node.volume, 4)}
+atom distance: {round(node.atom_distance, 4)}
+nearest atom index: {node.nearest_atom}
+nearest atom type: {node.nearest_atom_type}"""
                 if getattr(node, "bare_electron_indicator", None) is not None:
-                    label += f'\nfeature radius: {round(node.feature_radius,4)}\ndistance beyond atom: {node.dist_beyond_atom}'
-                    label += f'\ncoord number: {node.coord_num}\ncoord atoms: {node.coord_atoms}'
+                    label += f'\nfeature radius: {round(node.feature_radius, 4)}'
+                    label += f'\ndistance beyond atom: {round(node.dist_beyond_atom, 4)}'
+                    label += f'\ncoord number: {round(node.coord_num, 4)}'
+                    label += f'\ncoord atoms: {node.coord_atoms}'
                     label += f"\nBEI array: {node.bare_electron_scores.round(4)}"
                 types.append(node.basin_subtype)
             else:
@@ -1237,17 +1274,20 @@ class ElfAnalyzer(Bader):
                 atom_num = len(node.atoms)
                 if node.is_infinite:
                     atom_num = "infinite"
-                label = f"""type: reducible\ncontained atoms: {node.atoms}\ntotal contained atoms: {atom_num}"""
+                label = f"""type: reducible
+contained atoms: {node.atoms}
+total contained atoms: {atom_num}
+depth: {round(node.depth, 4)}"""
                 types.append("reducible")
             # change to html line break
             label = label.replace("\n", "<br>")
             labels.append(label)
             parent = node.parent
             if parent is not None:
-                Xn.append(parent.disappears_at)
-
+                Xn.append(round(parent.disappears_at, 4))
             else:
                 Xn.append(0)
+
         
         def assign_y_positions(graph, node, y_counter, y_positions):
             # This function iteratively loops starting from the root node and
@@ -1267,8 +1307,8 @@ class ElfAnalyzer(Bader):
         y_counter = itertools.count(0)  # This gives 0, 1, 2, ... for leaf placement
         
         # for root in root_nodes:
-        assign_y_positions(self.bifurcation_graph, self.bifurcation_graph[1], y_counter, y_positions)
-        
+        assign_y_positions(self.bifurcation_graph, self.bifurcation_graph.root_node, y_counter, y_positions)
+
         # Then set Yn using this
         Yn = [y_positions[i] for i in indices]
         
@@ -1281,17 +1321,26 @@ class ElfAnalyzer(Bader):
             Yn *= max_y
         # Get how spread out each node is
         y_division = max_y / len(end_indices)
-        breakpoint()
+        # breakpoint()
         # Now we need to get the lines that will be used for each edge. These will use
         # a nested lists where each edge has one entry and the sub-lists contain the
         # two x and y entries for each edge.
         Xe = []
         Ye = []
-        for edge in graph.edges():
-            parent = edge[0]
-            child = edge[1]
-            Xe.extend([Xn[indices.index(parent)], Xn[indices.index(child)], None])
-            Ye.extend([Yn[indices.index(parent)], Yn[indices.index(child)], None])
+        for node in self.bifurcation_graph.nodes:
+            parent = node.key
+            children = node.children
+            for child_node in children:
+                child = child_node.key
+                Xe.extend([Xn[indices.index(parent)], Xn[indices.index(child)], None])
+                Ye.extend([Yn[indices.index(parent)], Yn[indices.index(child)], None])
+        
+        # breakpoint()
+        # for edge in graph.edges():
+        #     parent = edge[0]
+        #     child = edge[1]
+        #     Xe.extend([Xn[indices.index(parent)], Xn[indices.index(child)], None])
+        #     Ye.extend([Yn[indices.index(parent)], Yn[indices.index(child)], None])
 
         # create the figure and add the lines and nodes
         fig = go.Figure()
