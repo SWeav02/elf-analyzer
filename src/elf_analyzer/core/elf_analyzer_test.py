@@ -293,7 +293,7 @@ class ElfAnalyzer(Bader):
         for elf_value in tqdm(possible_elf_values, desc="Finding bifurcation elf values"):
             # Find the indices where connections are above the current value
             # and get the connected basins
-            connected_basins = connection_pairs[connection_elfs>=elf_value]
+            connected_basins = connection_pairs[connection_elfs>elf_value]
             uf = UnionFind()
             uf.bulk_union(connected_basins[:,0], connected_basins[:,1])
             # Get the previous and current groups
@@ -309,6 +309,7 @@ class ElfAnalyzer(Bader):
         for key, value in important_values.items():
             important_values_new[key] = [np.array(list(i)).astype(int) for i in value]
         important_values = important_values_new
+        # breakpoint()
         return important_values
     
     def _initialize_bifurcation_graph(self):
@@ -353,8 +354,8 @@ class ElfAnalyzer(Bader):
                         parent_node = node
                         parent_found = True
                         break
-                if not parent_found:
-                    breakpoint()
+                assert parent_found, "Feature with no parent found. This is a bug, please notify our team"
+
                 # We've now found our parent and we want to update it's split value
                 parent_node.disappears_at = key
                 parent_node.reducible = True
@@ -396,9 +397,11 @@ class ElfAnalyzer(Bader):
     def _get_depth_3d(node):
         # I do this in a couple places so I decided its worth making a
         # convenience function
-        # NOTE: There will always be an ancestor that is infinite, because
-        # the root is infinite
+        
         ancestors = node.ancestors
+        # loop from most recent ancestor to oldest
+        # NOTE: There will always be at least one ancestor that is infinite, because
+        # the root must be infinite
         for ancestor in ancestors:
             if ancestor.is_infinite:
                 break
@@ -524,7 +527,6 @@ class ElfAnalyzer(Bader):
     def _clean_reducible_nodes(self):
         # TODO: Is this still necessary with the updated BaderKit package?
         graph = self.bifurcation_graph
-        # nodes_to_remove = []
         for node in graph:
             if not node.reducible:
                 continue
@@ -543,40 +545,42 @@ class ElfAnalyzer(Bader):
     def _mark_atomic(self):
         elf_data = self.reference_grid.total
         graph = self.bifurcation_graph
-        # create a variable to track the number of atoms left to assign
-        remaining_atoms = len(self.structure)
-        # BUG: The remaining atom count is broken currently. Sometimes atoms are
-        # double counted, e.g. when a core feature breaks off before another feature
-        # that fully surround the atom.
+        
+        # we sometimes assign values for a node during an earlier nodes assignment
+        # so we track that here
+        checked_nodes = []
         for node in tqdm(graph, desc="Marking atomic nodes"):
             # We are going to use attributes of each irreducible feature to
             # assign its children, so if this node isn't irreducible we skip it
             if not node.reducible:
                 continue
-            # There are three situations for our reducible feature. First, if
-            # it surrounds 0 atoms then all of its children must be valence. We
-            # skip in this case
+            # If we've already assigned this nodes children in an earlier loop, we
+            # skip
+            if node.key in checked_nodes:
+                continue
+            
+            # There are three situations for our reducible feature. 
+            
+            #### FIRST ####
+            # It contains 0 atoms and all of its children must be valence
             if len(node.atoms) == 0:
-                # Label all children as valence
                 for child in node.children:
+                    # skip reducible children
                     if child.reducible:
                         continue
-                    # We sometimes label the nodes of reducible features as covalent.
-                    # We don't want to overwrite these so we check that the subtype
-                    # doesn't exist
+                    # If we haven't already labeled this feature in a previous
+                    # step, mark it as valence
                     elif not hasattr(child, "basin_subtype"):
                         child.basin_type = "val"
                         child.basin_subtype = None
                 continue
-            # Second, it can contain more than one atom. In a full core model,
-            # The atoms that split off of this type of feature would themselves
-            # be reducible and always fit into the next category. However, with
-            # a pseudopotential model, this is not the case. Instead, an atom
-            # may only have a single irreducible feature. We check for this by
-            # noting if the child features fully surround an atom at the ELF they separate at
-            # TODO: It may be that this loop should just be for when the number
-            # of atoms is infinite. Basically, any finite number suggests a
-            # molecular feature and all basins would be core/shell/covalent/lone-pair.
+            
+            #### SECOND ####
+            # It contains an infinite number of atoms. Often, this will further
+            # reduce into the third situation, but especially in a pseudopotential
+            # model, an atom may break off into a single irreducible feature. We
+            # can determine this by checking if the feature fully surrounds an atom.
+            
             elif node.is_infinite:
                 for child in node.children:
                     # skip any children that are reducible
@@ -594,57 +598,63 @@ class ElfAnalyzer(Bader):
                         basin_type = "atom"
                         basin_subtype = "core"
            
-                        # Note that we found a new atom
-                        remaining_atoms -= 1
                     # label this basin
                     child.basin_type = basin_type
                     child.basin_subtype = basin_subtype
+                    
+            #### THIRD ####
+            # It contains a finite number of atoms. This indicates an atomic or
+            # molecular feature. The children of this feature can be atomic
+            # such as cores/shells and lone-pairs or (heterogenous) covalent bonds.
 
-            # The final option is that our reducible region surrounds a finite
-            # number of atoms. Most of the subregions of this
-            # environment will be atomic, but they can be of several types including
-            # atom shells/cores, unshared electrons, lone-pairs. The one exception
-            # is heterogenous covalent bonds, which should be shared.
-            elif len(node.atoms) > 0:                    
-                # Otherwise, these features are atomic, shells, or covalent/lone-pairs
-                # Now we loop over all of the children of this feature, including
-                # deeper children. We label these children based on their depth
-                # and whether they surround the atom. We label features as:
-                # core, shell, or other.
-                # The "others" will be assigned later on as lone-pairs or covalent
-                # depending on if they are along an atomic bond
+            elif len(node.atoms) > 0:
+                # We only label core/shells here and leave lone pairs and covalent
+                # features for later. We do this for all irreducible features
+                # that are part of this feature rather than its closest children,
+                # as they all must conform to this rule
+
                 for child in node.deep_children:
                     # define our default types
                     basin_type = "atom"
                     basin_subtype = None
-                    # If we have a split, we don't want to label this node so
-                    # we continue.
+                    # If this child is reducible, we note that its children are
+                    # assigned and continue
                     if child.reducible:
+                        checked_nodes.append(child.key)
                         continue
-                    # If we have many shell basins that form a sphere around the
-                    # atom they may separate at a low depth. However, lone-pairs
-                    # that are highly symmetric may also separate in a similar way.
-                    # We actually want the depth to the point where the basin connects
-                    # to a reducible domain surrounding the atom of interest. This is
-                    # the point where this node split.
-                    basin_shell_depth = child.disappears_at - node.disappears_at
-
+                    # atom shells will usually separate into many features with
+                    # low depths due to their spherical symmetry around the atom.
+                    # However, we can't just use our standard depth as lone-pairs
+                    # can also sometimes split to smaller features with low depth.
+                    # Instead we want the depth from the value where the child 
+                    # appeared to the highest value where it belonged to a feature
+                    # that surrounded at least one atom
+                    
+                    # find the most recent parent/grandparent that contained an
+                    # atom. 
+                    # NOTE: This will always exist as it was the requirement
+                    # for this elif
+                    for ancestor in child.ancestors:
+                        if len(ancestor.atoms) > 0:
+                            # we this ancestor surrounded at least one atom.
+                            basin_shell_depth = child.appears_at - ancestor.disappears_at
+                            break
+                    # if our shell depth is low, we have a shell
                     if basin_shell_depth < self.shell_depth:
                         basin_subtype = "shell"
+                    # otherwise, it could be a core, lone-pair, or covalent bond
                     else:
-                        # otherwise, we check if the feature surrounds an atom
-                        # Using the childs basins, and the value the basin split at, we
-                        # get a mask for the location of the basin
+                        # A core will contain an atom
                         low_elf_mask = np.isin(self.basin_labels, child.basins) & np.where(
                             elf_data > child.parent.disappears_at, True, False
                         )
                         atoms_in_basin = self.reference_grid.get_atoms_in_volume(low_elf_mask)
                         
-                        if len(atoms_in_basin) > 0:
+                        if len(atoms_in_basin) == 1: # used to be > 0. Any reason?
                             # We have an core region
                             basin_subtype = "core"
                         else:
-                            # otherwise its an other
+                            # otherwise its a lone pair or covalent bond
                             basin_type = "val"
                             basin_subtype = "other"
                     # Now we assign our types to the child node.
@@ -661,6 +671,7 @@ class ElfAnalyzer(Bader):
         graph = self.bifurcation_graph
         
         for node in graph:
+            # skip reducible and atomic features
             if node.reducible or getattr(node, "basin_type") != "val":
                 continue
             previous_subtype = getattr(node, "basin_subtype")
@@ -1332,16 +1343,19 @@ depth: {round(node.depth, 4)}"""
             children = node.children
             for child_node in children:
                 child = child_node.key
-                Xe.extend([Xn[indices.index(parent)], Xn[indices.index(child)], None])
-                Ye.extend([Yn[indices.index(parent)], Yn[indices.index(child)], None])
+                px = Xn[indices.index(parent)]
+                py = Yn[indices.index(parent)]
+                cx = Xn[indices.index(child)]
+                cy = Yn[indices.index(child)]
         
-        # breakpoint()
-        # for edge in graph.edges():
-        #     parent = edge[0]
-        #     child = edge[1]
-        #     Xe.extend([Xn[indices.index(parent)], Xn[indices.index(child)], None])
-        #     Ye.extend([Yn[indices.index(parent)], Yn[indices.index(child)], None])
-
+                # Vertical segment: (px, py) -> (px, cy)
+                Xe.extend([px, px, None])
+                Ye.extend([py, cy, None])
+        
+                # Horizontal segment: (px, cy) -> (cx, cy)
+                Xe.extend([px, cx, None])
+                Ye.extend([cy, cy, None])
+        
         # create the figure and add the lines and nodes
         fig = go.Figure()
         fig.add_trace(
@@ -1354,6 +1368,7 @@ depth: {round(node.depth, 4)}"""
                 hoverinfo="none",
             )
         )
+
 
         # convert lists to numpy arrays for easy querying.
         types = np.array(types)
@@ -1389,8 +1404,6 @@ depth: {round(node.depth, 4)}"""
             if Xn1[idx] == -1:
                 fig.add_trace(
                     go.Scatter(
-                        # x=xs,
-                        # y=ys,
                         x=[Xn[idx]],
                         y=[Yn[idx]],
                         mode="markers",

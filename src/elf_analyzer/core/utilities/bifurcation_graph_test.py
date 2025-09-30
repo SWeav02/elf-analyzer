@@ -91,12 +91,19 @@ class Node:
         
     @property
     def ancestors(self) -> list[Node]:
+        """
+
+        Returns
+        -------
+        list[Node]
+            The parent, grandparent, great grandparent, etc. of this node.
+
+        """
         all_parents = []
         current_parent = self.parent
         while current_parent is not None:
             all_parents.append(current_parent)
             current_parent = current_parent.parent
-        all_parents.reverse()
         return all_parents
 
     @property
