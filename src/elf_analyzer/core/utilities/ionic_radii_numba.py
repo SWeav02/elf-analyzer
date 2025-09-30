@@ -64,6 +64,12 @@ def get_ionic_radius(
         ):
     # get the number of points to interpolate
     num_points = int(round(bond_dist*line_res))
+    # I want this to always be odd because it is common for the exact midpoint
+    # to be the correct fraction. This isn't required, but results in clean
+    # values in these cases
+    if num_points % 2 == 1:
+        num_points += 1
+    
     # get the vector pointing from each point along the line to the next
     step_vec = (neigh_coords - atom_coords) / (num_points - 1)
 
@@ -78,7 +84,7 @@ def get_ionic_radius(
         
     # get the unique labels
     unique_labels = np.unique(labels)
-    
+
     # SITUATION 1:
         # The atom's nearest neighbor is a translation of itself. The radius
         # must always be halfway between the two.
@@ -101,7 +107,7 @@ def get_ionic_radius(
         # create a tracker for the last point that belongs to this site
         last_idx = 0
         # get local maxima that are covalent
-        midpoint = len(values) / 2
+        midpoint = (len(values) - 1) / 2
         for i, (value, label) in enumerate(zip(values, labels)):
             # skip points that aren't part of the covalent bond
             if label not in covalent_labels:
@@ -189,7 +195,7 @@ def get_ionic_radius(
                 radius_index -= step_mult
     
     # We now have a refined radius. Calculate the actual bond distance
-    bond_frac = radius_index / num_points
+    bond_frac = radius_index / (num_points - 1)
     return bond_frac * bond_dist
     
 @njit(cache=True)

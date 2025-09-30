@@ -58,7 +58,7 @@ class IonicRadiiTools:
             neighbor_indices=neighbor_indices,
             neighbor_dists=neighbor_dists,
             neighbor_images=neighbor_images,
-            covalent_labels=np.array(self.structure.indices_from_symbol("Z"), dtype=np.float64)
+            covalent_labels=np.array(self.feature_structure.indices_from_symbol("Z"), dtype=np.float64)
             )
     
     
