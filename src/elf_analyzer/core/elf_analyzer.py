@@ -12,6 +12,7 @@ from functools import cached_property
 from pathlib import Path
 import itertools
 from tqdm import tqdm
+from typing import TypeVar
 
 import numpy as np
 import plotly.graph_objects as go
@@ -20,10 +21,17 @@ from pymatgen.analysis.local_env import CrystalNN
 from pymatgen.core import Structure
 
 from baderkit.core import Grid, Bader
+from baderkit.core.toolkit import Format
 
 from elf_analyzer.core.utilities import UnionFind, BifurcationGraph, find_connections, IonicRadiiTools
 from elf_analyzer.core.utilities.numba_functions import check_all_covalent
 
+Self = TypeVar("Self", bound="ElfAnalyzer")
+# TODO:
+    # - update logging
+    # - Create faster method for checking if feature surrounds atom
+    # - Update simmate workflows (and badelf -_- )
+    # - add setters for properties
 
 class ElfAnalyzer(Bader):
     """
@@ -94,17 +102,6 @@ class ElfAnalyzer(Bader):
     @cached_property
     def feature_structure(self) -> Structure:
         return self.get_feature_structure()
-
-    # @cached_property
-    # def atom_coordination_envs(self) -> list:
-    #     """
-    #     Gets the coordination environment for the atoms in the system
-    #     using CrystalNN
-    #     """
-    #     # TODO: Add crystalNN kwargs?
-    #     cnn = CrystalNN(distance_cutoffs=None)
-    #     neighbors = cnn.get_all_nn_info(self.structure)
-    #     return neighbors
     
     @property
     def bifurcations(self) -> dict:
@@ -706,14 +703,17 @@ class ElfAnalyzer(Bader):
         min_covalent_angle = self.min_covalent_angle * math.pi / 180
         atom_frac_coords = self.structure.frac_coords
         atom_cart_coords = self.structure.cart_coords
-        covalent_nodes = check_all_covalent(
-            valence_frac, 
-            atom_frac_coords, 
-            atom_cart_coords, 
-            frac2cart=self.structure.lattice.matrix, 
-            min_covalent_bond_ratio=self.min_covalent_bond_ratio, 
-            min_covalent_angle=min_covalent_angle,
-            )
+        if len(valence_frac) > 0:
+            covalent_nodes = check_all_covalent(
+                valence_frac, 
+                atom_frac_coords, 
+                atom_cart_coords, 
+                frac2cart=self.structure.lattice.matrix, 
+                min_covalent_bond_ratio=self.min_covalent_bond_ratio, 
+                min_covalent_angle=min_covalent_angle,
+                )
+        else:
+            covalent_nodes = []
 
         for node, covalent in zip(valence_nodes, covalent_nodes):
             if covalent:
@@ -1610,6 +1610,43 @@ depth: {round(node.depth, 4)}"""
     #             max_en_diff = en_diff
     #     # return the en difference and number of neighbors
     #     return max_en_diff, len(neigh_list)
+    ###########################################################################
+    # Read methods
+    ###########################################################################
+    @classmethod
+    def from_vasp(
+        cls,
+        charge_filename: Path | str = "CHGCAR",
+        reference_filename: Path | str = "ELFCAR",
+        **kwargs,
+    ) -> Self:
+        """
+        Creates an ElfAnalyzer class object from VASP files.
+
+        Parameters
+        ----------
+        charge_filename : Path | str, optional
+            The path to the CHGCAR like file that will be used for summing charge.
+            The default is "CHGCAR".
+        reference_filename : Path | str
+            The path to ELFCAR like file that will be used for partitioning.
+            If None, the charge file will be used for partitioning.
+        **kwargs : dict
+            Keyword arguments to pass to the Bader class.
+
+        Returns
+        -------
+        Self
+            A Bader class object.
+
+        """
+        # This is just a wrapper of the Bader class to update the default to
+        # load the ELFCAR
+        return super().from_vasp(
+            charge_filename=charge_filename,
+            reference_filename=reference_filename,
+            **kwargs
+            )
     
     ###########################################################################
     # Methods for writing results
@@ -1627,30 +1664,73 @@ depth: {round(node.depth, 4)}"""
     
     def write_feature_basins(
             self, 
-            node_indices: list[int], 
-            file_pre:str = "ELFCAR"
+            node_keys: list[int], 
+            directory: str | Path = None,
+            write_reference: bool = True,
+            use_feature_structure: bool = True,
+            output_format: str | Format = None,
+            **writer_kwargs,
             ):
         """
-        For a give list of nodes, writes the bader basins associated with
+        For a give list of node keys, writes the bader basins associated with
         each.
         """
+        # get the data to use
+        if write_reference:
+            data_array = self.reference_grid.total
+            data_type = self.reference_grid.data_type
+        else:
+            data_array = self.charge_grid.total
+            data_type = self.charge_grid.data_type
+        
+        # get the structure to use
+        if use_feature_structure:
+            structure = self.feature_structure
+        else:
+            structure = self.structure
+
+        if directory is None:
+            directory = Path(".")
+            
         # TODO: Update to be more like bader
         graph = self.bifurcation_graph
-        for node in node_indices:
-            basins = graph[node].basins
-            basin_labeled_voxels = self.basin_labels.copy()
-            charge_mask = np.isin(basin_labeled_voxels, basins)
-            charge = self.charge
-            empty_grid = np.zeros(charge.shape)
-            empty_grid[charge_mask] = charge[charge_mask]
-            grid = Grid(self.structure, data={"total":empty_grid})
-            grid.write_file(f"{file_pre}_{node}")
+        for key in node_keys:
+            node = graph.node_from_key(key)
+            basin_indices = node.basins
+            # create a mask including each of the requested basins
+            mask = np.isin(self.basin_labels, basin_indices)
+            # copy data to avoid overwriting. Set data off of basin to 0
+            data_array_copy = data_array.copy()
+            data_array_copy[~mask] = 0.0
+            grid = Grid(
+                structure=structure,
+                data={"total": data_array_copy},
+                data_type=data_type,
+            )
+            file_path = directory / f"{grid.data_type.prefix}_f{key}"
+            # write file
+            grid.write(filename=file_path, output_format=output_format, **writer_kwargs)
+
     
-    def write_valence_basins(self):
+    def write_valence_basins(
+            self,
+            directory: str | Path = None,
+            write_reference: bool = True,
+            use_feature_structure: bool = True,
+            output_format: str | Format = None,
+            **writer_kwargs,
+            ):
         graph = self.bifurcation_graph
         nodes = []
-        for i, node in enumerate(graph):
+        for node in graph:
             if node.reducible or getattr(node, "basin_type") != "val":
                 continue
-            nodes.append(i)
-        self.write_feature_basins(graph, nodes, file_pre="ELFCAR")
+            nodes.append(node.key)
+        self.write_feature_basins(
+            nodes,
+            directory,
+            write_reference,
+            use_feature_structure,
+            output_format,
+            **writer_kwargs,
+            )

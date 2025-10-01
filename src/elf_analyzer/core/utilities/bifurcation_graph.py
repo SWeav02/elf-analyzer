@@ -10,8 +10,30 @@ Node = TypeVar("Node", bound="Node")
 # Edge = TypeVar("Edge", bound="Edge")
 BifurcationGraph = TypeVar("BifurcationGraph", bound="BifurcationGraph")
 
-# TODO: Make a to/from json
+def serialize_numpy(value):
+    """Convert numpy types into native Python types for JSON serialization."""
+    if isinstance(value, np.ndarray):
+        return value.tolist()  # arrays → Python lists
+    elif isinstance(value, (np.integer,)):
+        return int(value)      # numpy int → Python int
+    elif isinstance(value, (np.floating,)):
+        return float(value)    # numpy float → Python float
+    elif isinstance(value, (np.bool_)):
+        return bool(value)     # numpy bool → Python bool
+    else:
+        return value           # leave everything else as is
 
+def list_to_numpy(value):
+    """Convert lists of ints/floats to numpy for reading from JSON"""
+    if isinstance(value, list):
+        if len(value) > 0:
+            first_value = value[0]
+            if isinstance(first_value, int) or isinstance(first_value, np.integer):
+                return np.array(value, dtype=np.int64)
+            elif isinstance(first_value, float) or isinstance(first_value, np.floating):
+                return np.array(value, dtype=np.float64)
+    return value
+        
 class Node:
     
     def __init__(
@@ -29,7 +51,7 @@ class Node:
         self._children = []
         # convert integer parents to the corresponding Node object
         if type(parent) == int:
-            parent = bifurcation_graph[parent]
+            parent = bifurcation_graph.node_from_key(parent)
         
         # check if our parent is None. If so, we are trying to set a root node
         if parent is None:
@@ -212,4 +234,59 @@ class BifurcationGraph:
             node = self._node_keys[node]
         node.remove()
     
+    def to_dict(self) -> dict:
+        # NOTE: This could just be a to list method, but I may add other meta
+        # data down the line
+        # create our initial dict
+        graph_dict = {
+            "nodes": [],
+            }
+        for node in self:
+            # create a dict to store node properties
+            parent = node.parent
+            if parent:
+                parent_key = parent.key
+            else:
+                parent_key = None
+            node_dict = {
+                "parent": parent_key,
+                "key": node.key,
+                }
+            # add all properties
+            node_props = {}
+            for attr_name, value in node.__dict__.items():
+                # skip hidden variables
+                if attr_name[0] == "_":
+                    continue
+                node_props[attr_name] = serialize_numpy(list_to_numpy(value))
+            node_dict["properties"] = node_props
+            # add node
+            graph_dict["nodes"].append(node_dict)
+        return graph_dict
     
+    @classmethod
+    def from_dict(cls, graph_dict: dict):
+        nodes = graph_dict["nodes"]
+        
+        # create our initial graph object
+        graph = cls()
+        
+        # add our nodes
+        for node_dict in nodes:
+            key = node_dict["key"]
+            parent = node_dict["parent"]
+            properties = node_dict["properties"]
+            # create node
+            node = graph.add_node(index=key, parent=parent)
+            # add attributes
+            for attr_name, value in properties.items():
+                setattr(node, attr_name, list_to_numpy(value))
+        return graph
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict())
+    
+    @classmethod
+    def from_json(cls, json_str: str):
+        graph_dict = json.loads(json_str)
+        return cls.from_dict(graph_dict)

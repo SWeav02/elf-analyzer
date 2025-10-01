@@ -6,49 +6,49 @@ Extends the ElfAnalyzer to spin polarized calculations
 
 from pathlib import Path
 import logging
+from typing import TypeVar
 
 import numpy as np
-from pymatgen.core import Structure
-from baderkit.core import Grid, Bader
+from baderkit.core import Grid, Structure
 import plotly.graph_objects as go
 
 from elf_analyzer.core.elf_analyzer import ElfAnalyzer
 from elf_analyzer.core.utilities import BifurcationGraph
 
+Self = TypeVar("Self", bound="ElfAnalyzer")
+
 class SpinElfAnalyzer:
     def __init__(
             self,
-            elf_grid: Grid,
             charge_grid: Grid,
+            reference_grid: Grid,
             **kwargs,
             ):
         # First make sure the grids are actually spin polarized
-        assert elf_grid.is_spin_polarized and charge_grid.is_spin_polarized, "ELF must be spin polarized. Use a spin polarized calculation or switch to the ElfAnalyzer class."
+        assert reference_grid.is_spin_polarized and charge_grid.is_spin_polarized, "ELF must be spin polarized. Use a spin polarized calculation or switch to the ElfAnalyzer class."
         # store the original grid
-        self.original_elf_grid = elf_grid
+        self.original_reference_grid = reference_grid
         self.original_charge_grid = charge_grid
         # split the grids to spin up and spin down
-        self.elf_grid_up, self.elf_grid_down = elf_grid.split_to_spin()
-        self.charge_grid_up, self.charge_grid_down = charge_grid.split_to_spin(
-            "charge"
-        )
+        self.reference_grid_up, self.reference_grid_down = reference_grid.split_to_spin()
+        self.charge_grid_up, self.charge_grid_down = charge_grid.split_to_spin()
         # check if spin up and spin down are the same
         if np.allclose(
-            self.elf_grid_up.total, self.elf_grid_down.total, rtol=0, atol=1e-4
+            self.reference_grid_up.total, self.reference_grid_down.total, rtol=0, atol=1e-4
         ):
-            logging.info("Spin grids are found to be equal. Only spin-up system will be used for speed.")
+            logging.info("Spin grids are found to be equal. Only spin-up system will be used.")
             self._equal_spin = True
         else:
             self._equal_spin = False
         # create spin up and spin down elf analyzer instances
         self.elf_analyzer_up = ElfAnalyzer(
-            elf_grid=self.elf_grid_up,
+            reference_grid=self.reference_grid_up,
             charge_grid=self.charge_grid_up,
             **kwargs,
             )
         if not self._equal_spin:
             self.elf_analyzer_down = ElfAnalyzer(
-                elf_grid=self.elf_grid_down, 
+                reference_grid=self.reference_grid_down, 
                 charge_grid=self.charge_grid_down, 
                 )
         else:
@@ -64,25 +64,17 @@ class SpinElfAnalyzer:
         """
         Shortcut to grid's structure object
         """
-        structure = self.original_elf_grid.structure.copy()
+        structure = self.original_reference_grid.structure.copy()
         structure.add_oxidation_state_by_guess()
         return structure
     
     @property
-    def labeled_structure_up(self) -> Structure:
-        return self.elf_analyzer_up.labeled_structure
+    def feature_structure_up(self) -> Structure:
+        return self.elf_analyzer_up.feature_structure
     
     @property
-    def labeled_structure_down(self) -> Structure:
-        return self.elf_analyzer_down.labeled_structure
-    
-    @property
-    def bader_up(self) -> Bader:
-        return self.elf_analyzer_up.bader
-    
-    @property
-    def bader_down(self) -> Bader:
-        return self.elf_analyzer_down.bader
+    def feature_structure_down(self) -> Structure:
+        return self.elf_analyzer_down.feature_structure
     
     @property
     def bifurcation_graph_up(self) -> BifurcationGraph:
@@ -120,60 +112,43 @@ class SpinElfAnalyzer:
     @classmethod
     def from_vasp(
         cls,
-        elf_file: str | Path = "ELFCAR",
-        charge_file: str | Path = "CHGCAR",
+        charge_filename: Path | str = "CHGCAR",
+        reference_filename: Path | str = "ELFCAR",
         **kwargs,
-    ):
+    ) -> Self:
         """
-        Creates a BadElfToolkit instance from the requested partitioning file
-        and charge file in VASP format.
-        """
+        Creates a SpinElfAnalysis class object from VASP files.
 
-        elf_grid = Grid.from_vasp(elf_file)
-        charge_grid = Grid.from_vasp(charge_file)
-        return cls(
-            elf_grid=elf_grid,
-            charge_grid=charge_grid,
-            **kwargs,
-        )
+        Parameters
+        ----------
+        charge_filename : Path | str, optional
+            The path to the CHGCAR like file that will be used for summing charge.
+            The default is "CHGCAR".
+        reference_filename : Path | str
+            The path to ELFCAR like file that will be used for partitioning.
+            If None, the charge file will be used for partitioning.
+        total_only: bool
+            If true, only the first set of data in the file will be read. This
+            increases speed and reduced memory usage as the other data is typically
+            not used.
+            Defaults to True.
+        **kwargs : dict
+            Keyword arguments to pass to the Bader class.
+
+        Returns
+        -------
+        Self
+            A SpinElfAnalysis class object.
+
+        """
+        charge_grid = Grid.from_vasp(charge_filename, total_only=False)
+        if reference_filename is None:
+            reference_grid = None
+        else:
+            reference_grid = Grid.from_vasp(reference_filename, total_only=False)
+
+        return cls(charge_grid=charge_grid, reference_grid=reference_grid, **kwargs)
     
-    @classmethod
-    def from_cube(
-        cls,
-        elf_file: str | Path,
-        charge_file: str | Path,
-        **kwargs,
-    ):
-        """
-        Creates a BadElfToolkit instance from the requested partitioning file
-        and charge file in .cube format.
-        """
-
-        elf_grid = Grid.from_cube(elf_file)
-        charge_grid = Grid.from_cube(charge_file)
-        return cls(
-            elf_grid=elf_grid,
-            charge_grid=charge_grid,
-            **kwargs,
-        )
-    
-    @classmethod
-    def from_dynamic(
-        cls,
-        elf_file: str | Path,
-        charge_file: str | Path,
-        **kwargs,
-    ):
-        """
-        Creates a BadElfToolkit instance from the requested partitioning file
-        and charge file. Attempts to guess the file format from the name of the
-        files.
-        """
-
-        elf_grid = Grid.from_cube(elf_file)
-        charge_grid = Grid.from_cube(charge_file)
-        return cls(
-            elf_grid=elf_grid,
-            charge_grid=charge_grid,
-            **kwargs,
-        )
+    # TODO: Currently this class is only useful for VASP because .cube files
+    # typically only contain a single grid. Is there a reason to create a convenience
+    # function for cube files?

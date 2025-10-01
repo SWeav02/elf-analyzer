@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 
-import math
 
 import numpy as np
-from numba import njit, prange, types
+from numba import njit, prange
 from numpy.typing import NDArray
 
 from baderkit.core.methods.shared_numba import wrap_point
