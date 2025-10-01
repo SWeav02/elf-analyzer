@@ -11,8 +11,8 @@ import math
 from functools import cached_property
 from pathlib import Path
 import itertools
-from tqdm import tqdm
 from typing import TypeVar
+from rich.progress import track
 
 import numpy as np
 import plotly.graph_objects as go
@@ -32,6 +32,9 @@ Self = TypeVar("Self", bound="ElfAnalyzer")
     # - Create faster method for checking if feature surrounds atom
     # - Update simmate workflows (and badelf -_- )
     # - add setters for properties
+    
+# TODO: add convenience properties/methods for getting information about different
+# assignments
 
 class ElfAnalyzer(Bader):
     """
@@ -153,10 +156,11 @@ class ElfAnalyzer(Bader):
         This method is largely meant to be called through the get_bifurcation_graphs
         method.
         """
+        # run bader for nice looking logging purposes
+        self.run_bader()
+        self.run_atom_assignment()
+        
         # get an initial graph connecting bifurcations and final basins
-        logging.info(
-            "Generating initial bifurcation graph."
-            )
         self._initialize_bifurcation_graph()
         
         # assign node properties
@@ -239,7 +243,7 @@ class ElfAnalyzer(Bader):
                 "from pseudo-potentials (PPs) with only valence electrons (e.g. the defaults for Al, Si, B in VASP 5.X.X)."
                 "Try using PPs with more valence electrons such as VASP's GW potentials"
             )
-        # Finally, we ensure that all nodes have an 
+        # Finally, we ensure that all nodes have an assignment
         for node in self.bifurcation_graph:
             if node.reducible:
                 continue
@@ -248,6 +252,8 @@ class ElfAnalyzer(Bader):
                     "At least one ELF feature was not assigned. This is a bug. Please report to our github:"
                     "https://github.com/jacksund/simmate/issues"
                 )
+                
+        
     
     def _get_bifurcations(self):
         """
@@ -291,7 +297,7 @@ class ElfAnalyzer(Bader):
         # important and record the features that appear at that value
         important_values = {}
         connected_components = []
-        for elf_value in tqdm(possible_elf_values, desc="Finding bifurcation elf values"):
+        for elf_value in possible_elf_values:
             # Find the indices where connections are above the current value
             # and get the connected basins
             connected_basins = connection_pairs[connection_elfs>elf_value]
@@ -331,7 +337,7 @@ class ElfAnalyzer(Bader):
 
         # Now we loop over the ELF values at which bifurcations occur or maxima
         # exist
-        for key in tqdm(keys[1:], desc="Constructing graph"):
+        for key in keys[1:]:
             # Get the current and previous groups for comparison
             previous_basin_groups = current_basin_groups.copy()
             current_basin_groups = self.bifurcations[key]
@@ -411,13 +417,12 @@ class ElfAnalyzer(Bader):
     def _assign_node_properties(self):
         # get bifurcation graph and bader object
         graph = self.bifurcation_graph
-        # labels = self.basin_labels
         # get downscaled graphs
         downscaled_labels = self.downscaled_labels
         downscaled_reference_grid = self.downscaled_reference_grid
         checked_nodes = []
         # Loop over this graph and label each node with important information
-        for node in tqdm(graph, desc="Calculating feature properties"):
+        for node in track(graph, description="Calculating feature properties"):
             checked_nodes.append(node.key)
             # get parent and included basins
             parent = node.parent
@@ -546,13 +551,14 @@ class ElfAnalyzer(Bader):
             node.remove()
     
     def _mark_atomic(self):
+        logging.info("Marking atomic features")
         elf_data = self.reference_grid.total
         graph = self.bifurcation_graph
         
         # we sometimes assign values for a node during an earlier nodes assignment
         # so we track that here
         checked_nodes = []
-        for node in tqdm(graph, desc="Marking atomic features"):
+        for node in graph:
             # We are going to use attributes of each irreducible feature to
             # assign its children, so if this node isn't irreducible we skip it
             if not node.reducible:
@@ -916,6 +922,7 @@ class ElfAnalyzer(Bader):
         """
         Reduces shell nodes to a single node
         """
+        logging.info("Reducing shell features")
         graph = self.bifurcation_graph
         # We want to combine any nodes that belong to the same atomic shell. We
         # can do this by confirming that they share 2 aspects: The same closest
@@ -1010,7 +1017,7 @@ class ElfAnalyzer(Bader):
         0 to 1 and is the combination of several different metrics:
         ELF value, charge, depth, volume, and atom distance.
         """
-        for node in tqdm(self.bifurcation_graph, desc="Calculating bare electron character"):
+        for node in track(self.bifurcation_graph, description="Calculating bare electron character"):
             # skip atomic and reducible features
             if node.reducible or getattr(node, "basin_type") != "val":
                 continue
@@ -1172,6 +1179,7 @@ class ElfAnalyzer(Bader):
                 node.basin_subtype = "bare electron"
     
     def _mark_metallic_or_electride(self):
+        logging.info("Marking metallic and bare electron features")
         # create an array of our conditions to check against
         conditions = np.array(
             [
@@ -1182,7 +1190,8 @@ class ElfAnalyzer(Bader):
                 self.electride_radius_min,
             ]
         )
-        for node in tqdm(self.bifurcation_graph, desc="Marking metallic and bare electron nodes"):
+
+        for node in self.bifurcation_graph:
             if getattr(node, "basin_subtype", "") != "bare electron":
                 # skip features that aren't bare electrons
                 continue
@@ -1478,10 +1487,6 @@ depth: {round(node.depth, 4)}"""
         # Now we want to add the nodes index to our graph
         for node, index in node_to_index.items():
             self.bifurcation_graph[node].feature_structure_index = index
-
-        logging.info(f"{len(electride_indices)} bare electrons found")
-        if len(other_indices) > 0:
-            f"{len(other_indices)} shared sites found"
 
         return sorted_structure
     
