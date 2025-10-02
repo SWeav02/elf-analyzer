@@ -13,6 +13,7 @@ from pathlib import Path
 import itertools
 from typing import TypeVar
 from rich.progress import track
+import time
 
 import numpy as np
 import plotly.graph_objects as go
@@ -28,10 +29,9 @@ from elf_analyzer.core.utilities.numba_functions import check_all_covalent
 
 Self = TypeVar("Self", bound="ElfAnalyzer")
 # TODO:
-    # - update logging
     # - Create faster method for checking if feature surrounds atom
     # - Update simmate workflows (and badelf -_- )
-    # - add setters for properties
+
     
 # TODO: add convenience properties/methods for getting information about different
 # assignments
@@ -90,17 +90,8 @@ class ElfAnalyzer(Bader):
         
 
     ###########################################################################
-    # Main Properties
+    # Calculated Properties
     ###########################################################################
-    
-    @property
-    def structure(self) -> Structure:
-        """
-        Shortcut to grid's structure object
-        """
-        structure = self.reference_grid.structure.copy()
-        structure.add_oxidation_state_by_guess()
-        return structure
     
     @cached_property
     def feature_structure(self) -> Structure:
@@ -157,9 +148,12 @@ class ElfAnalyzer(Bader):
         method.
         """
         # run bader for nice looking logging purposes
-        self.run_bader()
-        self.run_atom_assignment()
+        # NOTE: I call a property rather than run_bader/run_atom_assignment to
+        # avoid repeat calcs if we've already run
+        self.atom_labels 
         
+        logging.info("Beginning ELF Analysis")
+        t0 = time.time()
         # get an initial graph connecting bifurcations and final basins
         self._initialize_bifurcation_graph()
         
@@ -252,6 +246,10 @@ class ElfAnalyzer(Bader):
                     "At least one ELF feature was not assigned. This is a bug. Please report to our github:"
                     "https://github.com/jacksund/simmate/issues"
                 )
+                
+        t1 = time.time()
+        logging.info("ELF Analysis Finished")
+        logging.info(f"Time: {round(t1-t0, 2)}")
                 
         
     
@@ -483,17 +481,16 @@ class ElfAnalyzer(Bader):
                 depth_3d = self._get_depth_3d(node)
                 # Using this, we can find the average frac coords of the attractors
                 # in this basin
-                # TODO: Check if this is necessary. With the updated Bader package
-                # no basin maxima should ever border each other, and all of them
-                # should eventually reduce to a distinct basin.
-                empty_structure = self.structure.copy()
-                empty_structure.remove_oxidation_states()
-                empty_structure.remove_species(empty_structure.symbol_set)
-
                 frac_coords = self.basin_maxima_frac[basins]
                 if len(frac_coords) == 1:
                     frac_coord = frac_coords[0]
                 else:
+                    # TODO: Check if this is necessary. With the updated Bader package
+                    # no basin maxima should ever border each other, and all of them
+                    # should eventually reduce to a distinct basin.
+                    empty_structure = self.structure.copy()
+                    empty_structure.remove_oxidation_states()
+                    empty_structure.remove_species(empty_structure.symbol_set)
                     # We append these to an empty structure and use pymatgen's
                     # merge method to get their average position
                     for frac_coord in frac_coords:
@@ -1017,6 +1014,11 @@ class ElfAnalyzer(Bader):
         0 to 1 and is the combination of several different metrics:
         ELF value, charge, depth, volume, and atom distance.
         """
+        # create a structure object with oxidation states for improved 
+        # crystalnn
+        temp_structure = self.structure.copy()
+        temp_structure.add_oxidation_state_by_guess()
+        
         for node in track(self.bifurcation_graph, description="Calculating bare electron character"):
             # skip atomic and reducible features
             if node.reducible or getattr(node, "basin_type") != "val":
@@ -1079,7 +1081,7 @@ class ElfAnalyzer(Bader):
             # TODO: I don't like this because it probably scales poorly due to
             # CrystalNN. Is there a way to get the neighbors without this?
             frac_coords = node.frac_coords
-            feature_structure = self.structure.copy()
+            feature_structure = temp_structure.copy()
             feature_structure.append("H-", frac_coords)
             cnn = CrystalNN(distance_cutoffs=None)
             coordination = cnn.get_nn_info(feature_structure, -1)
@@ -1642,7 +1644,7 @@ depth: {round(node.depth, 4)}"""
         Returns
         -------
         Self
-            A Bader class object.
+            An ElfAnalyzer class object.
 
         """
         # This is just a wrapper of the Bader class to update the default to
