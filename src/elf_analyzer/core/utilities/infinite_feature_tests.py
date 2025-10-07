@@ -11,6 +11,11 @@ from baderkit.core.methods.shared_numba import wrap_point
         
 from elf_analyzer.core import ElfAnalyzer
 
+analyzer = ElfAnalyzer.from_vasp(ignore_low_pseudopotentials=True) 
+analyzer.atom_charges
+graph = analyzer.bifurcation_graph
+analyzer.write_bifurcation_plot("test.html")
+
 @njit(parallel=True)
 def flood_fill_round(
     feature_mask,

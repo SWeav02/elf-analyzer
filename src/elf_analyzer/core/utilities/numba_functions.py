@@ -572,6 +572,10 @@ def get_surrounded_atoms(
             checked_features[feature] = True
     return feature_keys, feature_atoms
     
+
+###############################################################################
+# Find bifurcations
+###############################################################################
 @njit(parallel=True, cache=True)
 def flood_above(
     data,
@@ -590,7 +594,7 @@ def flood_above(
     # flood until no change
     while True:
         frontier_indices = np.argwhere(frontier_mask)
-        print(len(frontier_indices))
+        # print(len(frontier_indices))
         if len(frontier_indices) == 0:
             break
         for frontier_idx in prange(len(frontier_indices)):
@@ -714,6 +718,10 @@ def get_dimensionality_bifurcations(
             current_below_groups = below_groups[new_groups_idx]
             current_above_groups = above_groups[new_groups_idx]
             current_groups_idx = new_groups_idx
+        else:
+            # we are now below the previous bifurcation value, so our above
+            # groups should match our below groups
+            current_above_groups = current_below_groups
         
         # get a seed for each group
         seeds = np.empty((len(current_below_groups), 3), dtype=np.int64)

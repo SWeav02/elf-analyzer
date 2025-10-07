@@ -31,6 +31,9 @@ from elf_analyzer.core.utilities.numba_functions import (
     flood_above,
     get_dimensionality_bifurcations,
     )
+from elf_analyzer.core.utilities.numba_bifurcations import (
+    find_bifurcations
+    )
 
 Self = TypeVar("Self", bound="ElfAnalyzer")
 # TODO:
@@ -294,231 +297,107 @@ class ElfAnalyzer(Bader):
         connection_pairs = np.column_stack(connection_indices)  # same as argwhere result
         connection_elfs = connection_array[connection_indices]
         
-        # Now we want to find which of these elf values results in a topological
-        # change to our system. There are two type of changes that can occur 
-        # (that we care about) in our periodic system. 
-        # First, the sets of basins that are connected above and below the value 
-        # can change. We can easily chack for this by finding the connected groups.
-        # Second, the sets of basins may stay the same, but one of the sets changes 
-        # dimensionalities. We can check for this by testing each features dimensionality
-        # at each ELF value
-        # There is also other types of topological feature changes, but I don't
-        # think they're important currently
-        
-        # First, we get the bifurcations where a we have change in basin sets
-        possible_elf_values = list(np.unique(connection_elfs))
-        possible_elf_values.insert(0, np.float64(0.0))
-        
-        # create a dict to store our bifurcations
-        important_values = []
-        below_groups = [[]] # connected at/below the value
-        above_groups = [] # connected above the vale
-        connected_components = []
-        # loop from low to high
-        for elf_value in possible_elf_values:
-            # get the basins that are connected ABOVE this point.
-            connected_basins = connection_pairs[connection_elfs>elf_value]
-            uf = UnionFind()
-            uf.bulk_union(connected_basins[:,0], connected_basins[:,1])
-            # Get the previous and current sets
-            previous_connected = connected_components.copy()
-            connected_components = uf.groups_sets()
-            
-            # Check that this list of sets is different from the previous one. If
-            # it is, we add this as an important elf value
-            if connected_components != previous_connected:
-                # This is a new bifurcation point
-                important_values.append(elf_value)
-                if elf_value != 0.0:
-                    below_groups.append(above_groups[-1].copy())
-                above_groups.append([np.array(list(i)).astype(int) for i in connected_components])
-        important_values = np.array(important_values, dtype=np.float64)
-        breakpoint()
-        
-        # Now we get the bifurcations where there is a change in feature dimensionality
-        possible_elf_values.reverse()
         basin_maxima_grid = np.round(self.reference_grid.frac_to_grid(self.basin_maxima_frac)).astype(np.int64) % self.reference_grid.shape
         
-        important_values, below_groups, above_groups, dimensionalities = get_dimensionality_bifurcations(
-            possible_elf_values,
-            important_values,
-            below_groups,
-            above_groups,
-            self.reference_grid.total,
+        bifurcation_values, bifurcation_features, bifurcation_feature_indices, bifurcation_dimensionalities=find_bifurcations(
+            connection_pairs,
+            connection_elfs,
             basin_maxima_grid,
+            self.reference_grid.total,
             neighbor_transforms,
                 )
-        
-        bifurcations = {}
-        for key, group, dimensions in zip(important_values, above_groups, dimensionalities):
-            bifurcations[key] = {
-                "basin_sets": group,
-                "dimensionalities": dimensions
-                }
+        # TODO: This still feels a little slow due to how the frontier is tracked.
+        # Additionally, the alg to check what surrounds a given atom is not working
         breakpoint()
-        return bifurcations
-
-        # # get the possible values where a change occurs
-        # possible_elf_values = list(np.unique(connection_elfs))
-        # # reverse to go form high to low and add 0.0
-        # possible_elf_values.reverse()
-        # possible_elf_values.append(np.float64(0.0))
         
-        # # create a mask to flood fill
-        # flood_mask = np.zeros(self.reference_grid.shape*2, dtype=np.bool_)
-        # flood_mask_edge = np.copy(flood_mask)
-        # # get the grid coordinates of each basins maximum
-        # basin_maxima_grid = np.round(self.reference_grid.frac_to_grid(self.basin_maxima_frac)).astype(np.int64) % self.reference_grid.shape
-        # # create a mask of basins that are in a feature
-        # current_basins = np.zeros(len(basin_maxima_grid), dtype=np.bool_)
+        return bifurcation_values, bifurcation_features, bifurcation_feature_indices, bifurcation_dimensionalities
         
-        # # TODO: Move dimensionality changes fully to numba. This loop seems
-        # # slower than it should be.
-        
-        # # now loop over each each value from high to low, checking for changes
-        # important_values = {}
-        # connected_components = []
-        # dimensionalities = []
-        # for elf_value in possible_elf_values:
-        #     # get the basins that are connected at or above the current value
-        #     connected_basins = connection_pairs[connection_elfs>=elf_value]
-        #     uf = UnionFind()
-        #     uf.bulk_union(connected_basins[:,0], connected_basins[:,1])
-        #     # Get the previous and current sets
-        #     previous_connected = connected_components.copy()
-        #     connected_components = uf.groups_sets()
-            
-        #     # Check for new basins
-        #     previous_basins = current_basins.copy()
-        #     current_basins[np.unique(connected_basins)] = True
-        #     # Seed any new basins in our flood mask
-        #     new_maxima = basin_maxima_grid[current_basins & ~previous_basins]
-        #     flood_mask[new_maxima[:,0],new_maxima[:,1],new_maxima[:,2]] = True
-        #     flood_mask_edge[new_maxima[:,0],new_maxima[:,1],new_maxima[:,2]] = True
-            
-        #     # Flood fill to the current elf value
-        #     flood_mask, flood_mask_edge = flood_above(
-        #         reference_grid.total,
-        #         flood_mask,
-        #         flood_mask_edge,
-        #         elf_value,
-        #         neighbor_shifts,
-        #         )
-            
-        #     # Check feature dimensionalities
-        #     feature_points = []
-        #     for basin_set in connected_components:
-        #         basin_idx = list(basin_set)[0]
-        #         feature_points.append(basin_maxima_grid[basin_idx])
-        #     previous_dimensionalities = dimensionalities.copy()
-        #     dimensionalities = get_dimensionality_all(
-        #         flood_mask,
-        #         reference_grid.shape,
-        #         np.array(feature_points, dtype=np.int64)
-        #         )
-            
-        #     # Check that this list of sets is different from the previous one. If
-        #     # it is, we add this as an important elf value
-        #     if connected_components != previous_connected or not np.all(dimensionalities==previous_dimensionalities):
-        #         # This is a new bifurcation point. We 
-        #         important_values[elf_value] = {
-        #             "basin_sets": [np.array(list(i)).astype(int) for i in connected_components],
-        #             "dimensionalities": dimensionalities
-        #             }
-
-        # return important_values
     
     def _initialize_bifurcation_graph(self):
         # Now that we have our elf values where changes occur, we want to generate our
         # initial graph
         graph = BifurcationGraph()
-        # The elf values where topological changes happen are noted by the keys
-        # of our dictionary
-        keys = np.sort([i for i in self.bifurcations.keys()])
-        # Our initial domain contains all of the basins and is stored in the
-        # lowest key. We add this to our graph to avoid issues later in processing
-        # due to it being the root.
-        current_basin_groups = self.bifurcations[keys[0]]["basin_sets"]
+        elf_values, feature_groups, feature_group_indices, feature_dimensions = self.bifurcations
+        
+        # our elf values go from high to low, but we want to reverse them to loop
+        # from low to high
+        elf_values = elf_values.copy()
+        elf_values.reverse()
+        feature_groups = feature_groups.copy()
+        feature_groups.reverse()
+        feature_group_indices = feature_group_indices.copy()
+        feature_group_indices.reverse()
+        feature_dimensions = feature_dimensions.copy()
+        feature_dimensions.reverse()
+        
+        # First, we add an initial node representing where all features are
+        # connected at 0.0 ELF
         graph.add_node(
-            basins=current_basin_groups[0],
+            basins=[i for i in np.arange(len(self.basin_maxima_frac))],
             min_elf=np.float64(0.0),
             dimensionality=3,
             is_infinite=True,
             )
-
-        # Now we loop over the ELF values from high to low at which bifurcations 
-        # occur or maxima exist
-        for key in keys[1:]:
-            # Get the current and previous groups for comparison
-            previous_basin_groups = current_basin_groups.copy()
-            current_basin_groups = self.bifurcations[key]["basin_sets"]
-            current_group_dimensionalities = self.bifurcations[key]["dimensionalities"]
-            
-            for basin_group, dimensionality in zip(current_basin_groups, current_group_dimensionalities):
-                # we check if this basin group exists in the previous one. If it
-                # does, we've already added a node for this group and continue
-                old_group = any(np.array_equal(basin_group, other_group) for other_group in previous_basin_groups)
-                if old_group:
+        
+        # Now we loop over our elf values.
+        # NOTE: the basins at each value are the ones that exist at or below that
+        # value. Therefore, the nodes that appear right above that value are those
+        # in the next index of the list
+        for bif_idx, elf_value in enumerate(elf_values[:-1]):
+            # get the features that exist exactly at this value
+            old_feature_indices = feature_group_indices[bif_idx]
+            old_dimensions = feature_dimensions[bif_idx]
+            # get the features that appear right above this value
+            new_features = feature_groups[bif_idx+1]
+            new_feature_indices = feature_group_indices[bif_idx+1]
+            new_dimensions = feature_dimensions[bif_idx+1]
+            # Now we loop over the new features and add any new ones to our graph
+            for feat_idx, feat_basins, feat_dim in zip(
+                    new_feature_indices,
+                    new_features,
+                    new_dimensions
+                    ):
+                # check if this feature exists in the previous set of indices
+                new_node = True
+                for prev_idx, prev_dim in zip(old_feature_indices, old_dimensions):
+                    if prev_idx == feat_idx and prev_dim == feat_dim:
+                        # This feature existed previously
+                        new_node = False
+                        break
+                if not new_node:
                     continue
-                # otherwise, this is a new group and we want to add a node representing it.
-                # We also want to find the node that should be the parent of this one
-                # so that we can assign an edge and label the value at which the
-                # parent split. This corresponds to the most recent node that
-                # had a group containing all of this group.
+                
+                # if we're still here, we found a new node. Find its parent node
                 nodes = graph.nodes.copy()
                 nodes.reverse()
-                parent_found = False
                 for node in nodes:
-                    if np.all(np.isin(basin_group, node.basins)):
+                    if np.all(np.isin(feat_basins, node.basins)):
                         parent_node = node
-                        parent_found = True
                         break
-                assert parent_found, "Feature with no parent found. This is a bug, please notify our team"
-
-                # We've now found our parent and we want to update it's split value
-                # if we haven't already from another node
+                
+                # update this parent nodes attributes if we haven't already
                 if getattr(parent_node, "max_elf", None) is None:
-                    parent_node.max_elf = key
+                    parent_node.max_elf = elf_value
                     parent_node.reducible = True
-                    # if parent_node.key == 4:
-                    #     breakpoint()
-
-                # Now we update our node count and add the current node
-                graph.add_node(
+                
+                # Now we add the current node
+                node = graph.add_node(
                     parent=parent_node,
-                    basins=basin_group,
-                    min_elf=key,
+                    basins=feat_basins,
+                    min_elf=elf_value,
+                    dimensionality=feat_dim,
+                    is_infinite=feat_dim>0,
                     reducible=False,
-                    dimensionality=dimensionality,
-                    is_infinite=dimensionality>0
                     )
         
-        # we also want to add the values at which irreducible features disappear
-        # which correspond to their maximum values
+        # This process won't mark the maximum value of irreducible features. We
+        # mark those now
         for node in graph:
             if not node.reducible:
                 maxima_values = self.basin_maxima_ref_values[node.basins]
                 node.max_elf = maxima_values.max()
         
         self._bifurcation_graph = graph
-    
-    # def _get_downscale_grids(self):
-    #     # get the elf and label grids
-    #     reference_grid = self.reference_grid
-    #     labels = self.basin_labels.copy()
-    #     label_grid = reference_grid.copy()
-    #     label_grid.total = labels
-        
-    #     # We will use a downscaled version of our ELF for speed in some cases
-    #     downscale_resolution = self.downscale_resolution
-    #     if downscale_resolution is not None and self.reference_grid.grid_resolution > downscale_resolution:
-    #         self._downscaled_reference_grid = reference_grid.regrid(downscale_resolution)
-    #         downscaled_label_grid = label_grid.regrid(downscale_resolution, order=0)
-    #     else:
-    #         # NOTE: We don't copy the grids to avoid unneccessary reallocation
-    #         self._downscaled_reference_grid = reference_grid
-    #         downscaled_label_grid = label_grid
-    #     self._downscaled_labels = downscaled_label_grid.total
     
     @staticmethod
     def _get_depth_3d(node):
@@ -558,7 +437,7 @@ class ElfAnalyzer(Bader):
         reducible_keys = np.array(reducible_keys, dtype=np.int64)
         appear_at = np.array(appear_at, dtype=np.float64)
         disappear_at = np.array(disappear_at, dtype=np.float64)
-        
+        breakpoint()
         # get atom grid coordinates
         atom_grid_coords = grid.frac_to_grid(self.structure.frac_coords)
         atom_grid_coords = np.round(atom_grid_coords).astype(np.int64) % grid.shape
@@ -789,11 +668,12 @@ class ElfAnalyzer(Bader):
                 continue
             child = children[0]
             # check if this child is reducible
-            if not child:
+            if not child.reducible:
                 continue
             # if both features have the same dimensionality, this node is not
             # necessary
             if node.dimensionality == child.dimensionality:
+                breakpoint()
                 child.min_elf = node.min_elf
                 child.depth = child.max_elf - child.min_elf
                 node.remove()
