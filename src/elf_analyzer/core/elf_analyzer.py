@@ -306,9 +306,6 @@ class ElfAnalyzer(Bader):
             self.reference_grid.total,
             neighbor_transforms,
                 )
-        # TODO: This still feels a little slow due to how the frontier is tracked.
-        # Additionally, the alg to check what surrounds a given atom is not working
-        breakpoint()
         
         return bifurcation_values, bifurcation_features, bifurcation_feature_indices, bifurcation_dimensionalities
         
