@@ -55,12 +55,99 @@ def find_connections(
     return connection_array
    
 
-@njit
+# @njit
+# def flood_above(
+#     data,
+#     flood_labels,
+#     edge_indices,
+#     edge_neigh_vals,
+#     flood_basin_connections,
+#     max_value,
+#     neighbor_transforms,
+#         ):
+#     max_label = len(flood_basin_connections)
+#     # get supercell shape and single cell shape
+#     snx, sny, snz = flood_labels.shape
+#     nx, ny, nz = data.shape
+    
+#     # create a list to store new edges
+#     new_edge_indices = []
+#     new_edge_neigh_vals = []
+#     # get the edge indices that border a point with an unlabeled value above
+#     # the current cutoff
+#     frontier_indices = []
+#     for edge_index, edge_neigh_val in zip(edge_indices, edge_neigh_vals):
+#         if edge_neigh_val >= max_value:
+#             frontier_indices.append(edge_index)
+#         else:
+#             new_edge_indices.append(edge_index)
+#             new_edge_neigh_vals.append(edge_neigh_val)
+    
+#     # flood until no change
+#     while True:
+#         if len(frontier_indices) == 0:
+#             break
+#         # create a list to store new points
+#         new_frontier_indices = []
+#         for i,j,k in frontier_indices:
+#             # get the label at this index
+#             label = flood_basin_connections[flood_labels[i,j,k]]
+#             is_edge = False
+#             # create a tracker for the highest neigh value that isn't available at
+#             # the current cutoff
+#             highest_unavail_neigh = -1.0
+#             for si, sj, sk in neighbor_transforms:
+#                 # get the neighbor in super cell and single cell coordinates
+#                 ni = (i+si) % nx
+#                 nj = (j+sj) % ny
+#                 nk = (k+sk) % nz
+#                 sni, snj, snk = wrap_point(i+si, j+sj, k+sk, snx, sny, snz)
+#                 # get the value and label at this neighbor
+#                 value = data[ni,nj,nk]
+#                 neigh_label = flood_labels[sni,snj,snk]
+#                 # check if this point is above the current and next elf value
+#                 above_cutoff = value >= max_value
+#                 labeled = neigh_label != max_label
+                
+#                 if above_cutoff and not labeled:
+#                     # we want to flood this value
+#                     flood_labels[sni, snj, snk] = label
+#                     new_frontier_indices.append((sni, snj, snk))
+#                 elif above_cutoff and labeled:
+#                     # we border an already labeled point. Get its root
+#                     neigh_label = flood_basin_connections[neigh_label]
+#                     # if our labels don't match, this is a new connection
+#                     if label != neigh_label:
+#                         min_label = min(label, neigh_label)
+#                         # update our connections
+#                         flood_basin_connections[label] = min_label
+#                         flood_basin_connections[neigh_label] = min_label
+#                         for label_idx, root in enumerate(flood_basin_connections):
+#                             flood_basin_connections[label_idx] = flood_basin_connections[root]
+                        
+#                 elif not above_cutoff:
+#                     # The current point is on the edge for the next round
+#                     is_edge = True
+#                     if value > highest_unavail_neigh:
+#                         highest_unavail_neigh = value
+                    
+
+#             # If we have an edge, add it to our list for the next round
+#             if is_edge:
+#                 new_edge_indices.append((i,j,k))
+#                 new_edge_neigh_vals.append(highest_unavail_neigh)
+#         # update our frontier
+#         frontier_indices = new_frontier_indices
+    
+#     return flood_labels, new_edge_indices, new_edge_neigh_vals, flood_basin_connections
+
+
+
+@njit(parallel=True)
 def flood_above(
     data,
     flood_labels,
-    edge_indices,
-    edge_neigh_vals,
+    flood_neigh_vals,
     flood_basin_connections,
     max_value,
     neighbor_transforms,
@@ -70,76 +157,86 @@ def flood_above(
     snx, sny, snz = flood_labels.shape
     nx, ny, nz = data.shape
     
-    # create a list to store new edges
-    new_edge_indices = []
-    new_edge_neigh_vals = []
-    # get the edge indices that border a point with an unlabeled value above
-    # the current cutoff
-    frontier_indices = []
-    for edge_index, edge_neigh_val in zip(edge_indices, edge_neigh_vals):
-        if edge_neigh_val >= max_value:
-            frontier_indices.append(edge_index)
-        else:
-            new_edge_indices.append(edge_index)
-            new_edge_neigh_vals.append(edge_neigh_val)
+    # get our initial flood frontier
+    flood_frontier = flood_neigh_vals >= max_value
     
     # flood until no change
     while True:
-        if len(frontier_indices) == 0:
-            break
-        # create a list to store new points
-        new_frontier_indices = []
+        # get our frontier indices
+        frontier_indices = np.argwhere(flood_frontier)
+        print(len(frontier_indices))
+        new_flood = False
         for i,j,k in frontier_indices:
-            # get the label at this index
-            label = flood_basin_connections[flood_labels[i,j,k]]
+        # for frontier_idx in prange(len(frontier_indices)):
+        #     i,j,k = frontier_indices[frontier_idx]
+            # get the label root at this index
+            label = flood_labels[i,j,k]
+            # create a tracker for if this point is part of our edge
             is_edge = False
             # create a tracker for the highest neigh value that isn't available at
             # the current cutoff
             highest_unavail_neigh = -1.0
             for si, sj, sk in neighbor_transforms:
                 # get the neighbor in super cell and single cell coordinates
-                ni = (i+si) % nx
-                nj = (j+sj) % ny
-                nk = (k+sk) % nz
-                sni, snj, snk = wrap_point(i+si, j+sj, k+sk, snx, sny, snz)
+                ii = i+si
+                jj = j+sj
+                kk = k+sk
+                ni = ii % nx
+                nj = jj % ny
+                nk = kk % nz
+                sni, snj, snk = wrap_point(ii, jj, kk, snx, sny, snz)
                 # get the value and label at this neighbor
                 value = data[ni,nj,nk]
                 neigh_label = flood_labels[sni,snj,snk]
-                # check if this point is above the current and next elf value
-                above_current = value >= max_value
+
+                # check if this point is above the current cutoff
+                above_cutoff = value >= max_value
+                # check if this point has been labeled already
                 labeled = neigh_label != max_label
                 
-                if above_current and not labeled:
-                    # we want to flood this value
+                if above_cutoff and not labeled:
+                    # we want to flood this point and add it to our frontier
                     flood_labels[sni, snj, snk] = label
-                    new_frontier_indices.append((sni, snj, snk))
-                elif above_current and labeled:
-                    # we border an already labeled point. Get its root
-                    neigh_label = flood_basin_connections[neigh_label]
-                    # if our labels don't match, this is a new connection
-                    if label != neigh_label:
-                        min_label = min(label, neigh_label)
-                        # update our connections
-                        flood_basin_connections[label] = min_label
-                        flood_basin_connections[neigh_label] = min_label
-                        for label_idx, root in enumerate(flood_basin_connections):
-                            flood_basin_connections[label_idx] = flood_basin_connections[root]
-                        
-                elif not above_current:
-                    # The current point is on the edge for the next round
+                    flood_frontier[sni, snj, snk] = True
+                    # note we made at least one change
+                    new_flood = True
+                elif above_cutoff and labeled:
+                    # This neighbor is labeled. We want to check if it belongs
+                    # to a different group. First, we get the group each point
+                    # belongs to.
+                    root = flood_basin_connections[label]
+                    neigh_root = flood_basin_connections[neigh_label]
+
+                    # if our roots don't match, this is a new connection
+                    if root == neigh_root:
+                        # This isn't a new connection and we can continue
+                        continue
+                    # otherwise, we update our connections
+                    lowest_root = min(root, neigh_root)
+                    for basin_idx in (label, neigh_label, root, neigh_root):
+                        flood_basin_connections[basin_idx] = lowest_root
+                    
+                elif not above_cutoff:
+                    # The current point will flood to this neighbor in a future
+                    # round. We record the next value where the current point
+                    # will flood
                     is_edge = True
                     if value > highest_unavail_neigh:
                         highest_unavail_neigh = value
                     
 
-            # If we have an edge, add it to our list for the next round
+            # If we have an edge, add it for next round
             if is_edge:
-                new_edge_indices.append((i,j,k))
-                new_edge_neigh_vals.append(highest_unavail_neigh)
-        # update our frontier
-        frontier_indices = new_frontier_indices
+                flood_neigh_vals[i,j,k] = highest_unavail_neigh
+            # otherwise, remove it from our edge using an unobtainably low value
+            else:
+                flood_neigh_vals[i,j,k] = -1.0e12
+                
+        # if we didn't flood to any new points, cancel
+        if not new_flood:
+            break
     
-    return flood_labels, new_edge_indices, new_edge_neigh_vals, flood_basin_connections
+    return flood_labels, flood_neigh_vals, flood_basin_connections
     
 @njit
 def get_dimensionality(
@@ -190,13 +287,6 @@ def get_dimensionality(
         # get label
         # NOTE: There should always be a label here due to how we seed labels
         labels.append(flood_basin_connections[flood_labels[x,y,z]])
-        # base_label = flood_labels[x,y,z]
-        # if base_label == max_label:
-        #     # this point hasn't been labeled yet and we add the placeholder which
-        #     # will never match a labeled value
-        #     labels.append(base_label)
-        # else:
-        #     labels.append(flood_basin_connections[base_label])
     
     # create a counter for the number of connections
     connection_num = 0

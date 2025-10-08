@@ -62,7 +62,7 @@ dependencies=[
     "numba",
     "typer", # For CLI
     # Extra (smaller) dependencies & utilities
-    "rich>", # for coloring CLI outputs and progress bars
+    "rich", # for coloring CLI outputs and progress bars
 ]
 
 # optional dependencies that are not installed by default
