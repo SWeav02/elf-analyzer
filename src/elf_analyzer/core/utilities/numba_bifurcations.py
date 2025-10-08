@@ -6,55 +6,7 @@ from numpy.typing import NDArray
 
 from baderkit.core.methods.shared_numba import wrap_point
 
-@njit
-def find_connections(
-        labeled_array: NDArray[np.int64],
-        data: NDArray[np.float64],
-        edge_voxels,
-        basin_num: np.int64,
-        neighbor_transforms: NDArray[np.int64],
-        ):
-    nx, ny, nz = labeled_array.shape
-    # create a 2D array for tracking connections.
-    # TODO: We could potentially reduce this by using lists as basins will never
-    # include connections to basins with lower indices
-    connection_array = np.zeros((basin_num, basin_num), dtype=np.float64)
-    # loop over each edge voxel
-    for i, j, k in edge_voxels:
-        # get this points elf value and basin label
-        elf_value = data[i,j,k]
-        label = labeled_array[i,j,k]
-        if label == -1:
-            # This shouldn't happen if bader is working properly, but if it does
-            # we don't want to use this label
-            continue
-        # loop over the neighbors
-        for si, sj, sk in neighbor_transforms:
-            # wrap points
-            ii, jj, kk = wrap_point(i + si, j + sj, k + sk, nx, ny, nz)
-            # get the label at this point
-            neigh_label = labeled_array[ii,jj,kk]
-            # skip if this is part of the same basin
-            if neigh_label == label or neigh_label == -1:
-                continue
-            # otherwise, get the value at this neighbor
-            neigh_elf_value = data[ii,jj,kk]
-            # the value at which these two points 'connect' when visualizing the
-            # isosurface is the lower value.
-            lower_elf = min(elf_value, neigh_elf_value)
-            # we want to find the highest connection point for this pair of basins,
-            # which we store in our connection array. The highest value for each
-            # pair is located at index n, m where n is the lower label value
-            lower_label = min(label, neigh_label)
-            higher_label = max(label, neigh_label)
-            # compare our values and if this is higher, update it
-            if lower_elf > connection_array[lower_label, higher_label]:
-                connection_array[lower_label, higher_label] = lower_elf
-    
-    # return connection array
-    return connection_array
-
-@njit
+@njit(cache=True)
 def _find_root_compress(parents, x):
     """Find root with partial path compression"""
     while x != parents[x]:
@@ -62,21 +14,21 @@ def _find_root_compress(parents, x):
         x = parents[x]
     return x
 
-@njit
+@njit(cache=True)
 def _find_root(parents, x):
     """Find root without path compression. Parallel friendly"""
     while x != parents[x]:
         x = parents[x]
     return x
 
-@njit
+@njit(cache=True)
 def _union(parents, x, y):        
     rx = _find_root_compress(parents, x)
     ry = _find_root_compress(parents, y)
 
     parents[rx] = ry
     
-@njit(parallel=True)
+@njit(parallel=True, cache=True)
 def _reduce_roots(parents):
     new_parents = np.empty_like(parents, dtype=parents.dtype)
     for i in prange(len(parents)):
@@ -88,7 +40,7 @@ def _reduce_roots(parents):
         new_parents[i] = _find_root(parents, current_val)
     return new_parents
     
-@njit
+@njit(cache=True)
 def flood_above(
     data,
     flood_labels,
@@ -100,6 +52,9 @@ def flood_above(
     neighbor_transforms,
     num_basins,
         ):
+    """
+    Floods features up to the current value
+    """
     # get the label that represents an unfilled point
     max_label = len(flood_basin_connections)
     
@@ -207,7 +162,7 @@ def flood_above(
     
     return flood_labels, frontier_lists, flood_basin_connections
     
-@njit
+@njit(cache=True)
 def get_dimensionality(
     flood_labels,
     grid_shape,
@@ -215,6 +170,10 @@ def get_dimensionality(
     flood_basin_connections,
     cell_transforms,
         ):
+    """
+    Finds the dimensionality of a feature from the provided seed
+    """
+    
     # max_label = len(flood_basin_connections)
     nx, ny, nz = grid_shape
     connections = [
@@ -270,7 +229,7 @@ def get_dimensionality(
 
     return dimensionality
 
-@njit(parallel=True)
+@njit(parallel=True, cache=True)
 def get_dimensionality_all(
     flood_mask,
     grid_shape,
@@ -278,6 +237,9 @@ def get_dimensionality_all(
     flood_basin_connections,
     cell_transforms,
         ):
+    """
+    Finds the dimensionality of a set of features from the provided seeds
+    """
     # create an array to track which points are infinite
     dimensionalities = np.zeros(len(seed_points), dtype=np.int64)
     for seed_idx in prange(len(seed_points)):
@@ -291,7 +253,7 @@ def get_dimensionality_all(
             )
     return dimensionalities
 
-@njit
+@njit(cache=True)
 def find_bifurcations(
     connection_pairs,
     connection_elfs,
@@ -299,6 +261,10 @@ def find_bifurcations(
     data,
     neighbor_transforms,
         ):
+    """
+    Finds the ELF values at which changes in features or feature dimensionalities
+    occur
+    """
     nx, ny, nz = data.shape
     num_basins = len(basin_maxima_grid)
     # get all possible elf values (including 0.0) and flip from high to low
@@ -310,6 +276,7 @@ def find_bifurcations(
     ###########################################################################
     # create an array to represent where each basin has flooded to
     flood_labels = np.full((nx*2, ny*2, nz*2), num_basins*8, dtype=np.uint16)
+    
     # create lists to store which points on the grid need to be iterated over
     # at each elf value
     frontier_lists = []
@@ -364,6 +331,9 @@ def find_bifurcations(
     previous_elf_value = 1.0e12 # make unreasonably large
     for val_idx, elf_value in enumerate(possible_elf_values):
         
+        #######################################################################
+        # Find groups of connected basins
+        #######################################################################
         # get the new connections that exist at this value
         connection_indices = np.where((connection_elfs>=elf_value) & (connection_elfs < previous_elf_value))
         current_connections = connection_pairs[connection_indices]
@@ -469,6 +439,10 @@ def find_bifurcations(
                 same_groups = False
                 feature_ids.append(unique_features)
                 unique_features += 1
+        
+        #######################################################################
+        # Flood fill and get dimensionalities
+        #######################################################################
         
         # We also want to calculate the dimensionality of each feature, regardless
         # of if we have a new group or not.

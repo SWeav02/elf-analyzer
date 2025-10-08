@@ -24,15 +24,16 @@ from pymatgen.core import Structure
 from baderkit.core import Grid, Bader
 from baderkit.core.toolkit import Format
 
-from elf_analyzer.core.utilities import UnionFind, BifurcationGraph, find_connections, IonicRadiiTools
+from elf_analyzer.core.utilities import BifurcationGraph, IonicRadiiTools
 from elf_analyzer.core.utilities.numba_functions import (
     check_all_covalent,
-    get_surrounded_atoms,
-    flood_above,
-    get_dimensionality_bifurcations,
+    find_connections,
     )
 from elf_analyzer.core.utilities.numba_bifurcations import (
     find_bifurcations
+    )
+from elf_analyzer.core.utilities.numba_surrounds import (
+    get_surrounded_atoms
     )
 
 Self = TypeVar("Self", bound="ElfAnalyzer")
@@ -314,18 +315,13 @@ class ElfAnalyzer(Bader):
         # Now that we have our elf values where changes occur, we want to generate our
         # initial graph
         graph = BifurcationGraph()
-        elf_values, feature_groups, feature_group_indices, feature_dimensions = self.bifurcations
         
-        # our elf values go from high to low, but we want to reverse them to loop
-        # from low to high
-        elf_values = elf_values.copy()
-        elf_values.reverse()
-        feature_groups = feature_groups.copy()
-        feature_groups.reverse()
-        feature_group_indices = feature_group_indices.copy()
-        feature_group_indices.reverse()
-        feature_dimensions = feature_dimensions.copy()
-        feature_dimensions.reverse()
+        # our bifurcation information goes form high to low, but we want to
+        # reverse them to go from low to high
+        bifurcations = [i.copy() for i in self.bifurcations]
+        for i in bifurcations:
+            i.reverse()
+        elf_values, feature_groups, feature_group_indices, feature_dimensions = bifurcations
         
         # First, we add an initial node representing where all features are
         # connected at 0.0 ELF
@@ -416,7 +412,7 @@ class ElfAnalyzer(Bader):
         num_basins = len(self.basin_maxima_frac) 
         grid = self.reference_grid
         data = grid.total
-        # NOTE: Should I use just shared faces instead?
+        # NOTE: Should I use just use shared faces instead?
         neighbor_transforms, _ = grid.point_neighbor_transforms
         basin_labels = self.basin_labels
         

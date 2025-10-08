@@ -1,4 +1,5 @@
 **/__pycache__
 src/elf-analyzer.egg-info
+src/elf_analyzer.egg-info
 .spyproject
 build
