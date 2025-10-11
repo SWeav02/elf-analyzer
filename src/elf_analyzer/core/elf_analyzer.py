@@ -29,7 +29,7 @@ from elf_analyzer.core.utilities.numba_functions import (
     check_all_covalent,
     find_connections,
     )
-from elf_analyzer.core.utilities.numba_bifurcations import (
+from elf_analyzer.core.utilities.solid_dimensionality_test import (
     find_bifurcations
     )
 from elf_analyzer.core.utilities.numba_surrounds import (
@@ -165,6 +165,9 @@ class ElfAnalyzer(Bader):
         t0 = time.time()
         # get an initial graph connecting bifurcations and final basins
         self._initialize_bifurcation_graph()
+        t_0 =time.time()
+        logging.info(f"Test Time: {t_0-t0}")
+        return self.bifurcation_graph
         
         self._assign_reducible_node_properties()
         
@@ -300,13 +303,19 @@ class ElfAnalyzer(Bader):
         
         basin_maxima_grid = np.round(self.reference_grid.frac_to_grid(self.basin_maxima_frac)).astype(np.int64) % self.reference_grid.shape
         
-        bifurcation_values, bifurcation_features, bifurcation_feature_indices, bifurcation_dimensionalities=find_bifurcations(
+        (
+            bifurcation_values, 
+            bifurcation_features, 
+            bifurcation_feature_indices, 
+            bifurcation_dimensionalities, 
+            ) = find_bifurcations(
             connection_pairs,
             connection_elfs,
             basin_maxima_grid,
             self.reference_grid.total,
             neighbor_transforms,
                 )
+        # breakpoint()
         
         return bifurcation_values, bifurcation_features, bifurcation_feature_indices, bifurcation_dimensionalities
         
