@@ -154,12 +154,17 @@ def compress_cycles(
     """
     new_cycles = [(-1, -1, -1)]
     new_roots = [-1]
+    # remove numba typing placeholders
+    new_cycles = new_cycles[1:]
+    new_roots = new_roots[1:]
     
-    merged_cycles = []
-    merged_roots = []
+    merged_cycles = [[(-1,-1,-1)]]
+    merged_roots = [-1]
+    merged_cycles = merged_cycles[1:]
+    merged_roots = merged_roots[1:]
 
     # Step 1: map each cycle to its final root
-    for i in range(1, len(cycles)):  # skip placeholder
+    for i in range(len(cycles)):  # skip placeholder
         # get the root and cycle
         root = cycle_roots[i]
         cycle = cycles[i]
@@ -217,6 +222,8 @@ def get_component_dimensionality(
     if cycles is None:
         cycles = [(-1,-1,-1)] # placeholder for numba typing
         cycle_roots = [-1]
+        cycles = cycles[1:]
+        cycle_roots = cycle_roots[1:]
         
     for i in range(nx):
         for j in range(ny):
@@ -294,6 +301,7 @@ def find_bifurcations(
     connection_pairs,
     connection_elfs,
     basin_maxima_grid,
+    basin_maxima_ref_values,
     data,
     neighbor_transforms,
         ):
@@ -336,8 +344,11 @@ def find_bifurcations(
     # highest value. 
     feature_groups = [[-1]] # -1 is just for typing as numba dislikes the empty list
     feature_ids = [-1]
+    feature_groups = feature_groups[1:]
+    feature_ids = feature_ids[1:]
     # do the same for dimensionalities of the features
     new_dimensionalities = [-1]
+    new_dimensionalities = new_dimensionalities[1:]
     # create a counter for the total number of unique features
     unique_features = 0
     
@@ -457,6 +468,7 @@ def find_bifurcations(
             # We also want to calculate the dimensionality of each feature, regardless
             # of if we have a new group or not.
             # Flood fill to the current value
+
             roots, dims, cycles, cycle_roots = get_component_dimensionality(
                 new_solid,
                 previous_solid,
@@ -466,6 +478,7 @@ def find_bifurcations(
                 cycle_roots=cycle_roots,
                 neighbors=neighbor_transforms,
                 )
+
             for feature_point in feature_points:
                 new_dim = get_dimensionality(
                     parent=point_connections,
@@ -501,10 +514,91 @@ def find_bifurcations(
         
         # update our previous elf value
         previous_elf_value = elf_value
+        
+    # add a final feature that appears at the lowest possible value and contains
+    # all basins
+    bifurcation_values.append(data.min())
+    bifurcation_features.append(bifurcation_features[-1])
+    bifurcation_feature_indices.append(bifurcation_feature_indices[-1])
+    bifurcation_dimensionalities.append(bifurcation_dimensionalities[-1])
+
+    
+    #######################################################################
+    # Organize Features
+    #######################################################################
+    # reverse values to go from low to high
+    bifurcation_values.reverse()
+    bifurcation_features.reverse()
+    bifurcation_feature_indices.reverse()
+    bifurcation_dimensionalities.reverse()
+    
+    # Create arrays to track features
+    feature_basins = [[] for i in range(num_features)]
+    feature_min_elfs = np.empty(range(num_features), dtype=np.float64)
+    feature_max_elfs = np.empty(range(num_features), dtype=np.float64)
+    feature_dims = np.empty(range(num_features), dtype=np.int64)
+    feature_parents = np.empty(range(num_features), dtype=np.int64)
+    
+    # Now we loop over our elf values.
+    # NOTE: the basins at each value are the ones that exist at or below that
+    # value. Therefore, the nodes that appear right above that value are those
+    # in the next index of the list
+    feat_count = 0
+    for bif_idx, elf_value in enumerate(bifurcation_values[:-1]):
+        # get the features that exist exactly at this value
+        old_feature_indices = bifurcation_feature_indices[bif_idx]
+        old_dimensions = bifurcation_dimensionalities[bif_idx]
+        # get the features that appear right above this value
+        new_features = bifurcation_features[bif_idx+1]
+        new_feature_indices = bifurcation_feature_indices[bif_idx+1]
+        new_dimensions = bifurcation_dimensionalities[bif_idx+1]
+        # Now we loop over the new features and add any new ones to our graph
+        for feat_idx, feat_basins, feat_dim in zip(
+                new_feature_indices,
+                new_features,
+                new_dimensions
+                ):
+            # check if this feature exists in the previous set of indices
+            new_node = True
+            for prev_idx, prev_dim in zip(old_feature_indices, old_dimensions):
+                if prev_idx == feat_idx and prev_dim == feat_dim:
+                    # This feature existed previously
+                    new_node = False
+                    break
+            if not new_node:
+                continue
+            
+            # if we're still here, this is a new feature and we record its attributes
+            feature_basins[feat_count] = feat_basins
+            feature_min_elfs[feat_count] = elf_value
+            feature_dims[feat_count] = feat_dim
+            
+            # find the parent of this feature
+            possible_basins = feature_basins[:feat_count]
+            possible_basins.reverse()
+
+            for idx, (parent_basins) in enumerate(possible_basins):
+                if np.all(np.isin(feat_basins, parent_basins)):
+                    parent_idx = feat_count - idx - 1
+                    break
+            # add the parent connection
+            feature_parents[feat_count] = parent_idx
+            
+            # note this parent disappears at this value
+            feature_max_elfs[parent_idx] = elf_value
+            
+            # if this feature is irreducible, add its max value
+            if len(feat_basins) == 1:
+                feature_max_elfs[feat_count] = basin_maxima_ref_values[feat_basins[0]]
+            
+            # note we found a new feature
+            feat_count += 1
+    
             
     return (
-        bifurcation_values, 
-        bifurcation_features, 
-        bifurcation_feature_indices, 
-        bifurcation_dimensionalities,
+        feature_basins,
+        feature_min_elfs,
+        feature_max_elfs,
+        feature_dims,
+        feature_parents,
         )

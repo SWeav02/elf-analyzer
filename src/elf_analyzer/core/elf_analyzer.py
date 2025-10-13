@@ -32,13 +32,36 @@ from elf_analyzer.core.utilities.numba_functions import (
 from elf_analyzer.core.utilities.solid_dimensionality_test import (
     find_bifurcations
     )
-from elf_analyzer.core.utilities.numba_surrounds import (
-    get_surrounded_atoms
+from elf_analyzer.core.utilities.surrounds_atom_test import (
+    get_features_surrounding_atoms
     )
 
 Self = TypeVar("Self", bound="ElfAnalyzer")
 # TODO:
-    # - Create faster method for checking if feature surrounds atom
+    # - Update graph class to be more useful to specifically bifurcation plot
+    # - Make updates to selection rules:
+        # 1. Core features should have maxima within one voxel of an atom
+        # 2. Shells should have a low depth to a node containing EXACTLY 1 atom.
+        # That node should be the same for all shells, so shallow metal features
+        # that split at an earlier stage are excluded. Also check up on the shell
+        # depth correction I currently have. Maybe those really should be assigned
+        # as something else
+        # 3. Covalent/lone-pair features don't need to be in a finite molecule.
+        # e.g. they may be in a polymer. Instead, covalent bonds should be found
+        # using charge, angle, and bond ratio cutoffs. (is charge even necessary if we've already found shells?)
+        # Lone pairs are then any features at approximately the same radius as the
+        # covalent bond.
+    # - For now I shouldn't label electrides by default. Instead I'll add a
+    # convenience method for getting an electride structure. That way the Simmate
+    # workflows can still function 
+    # - create method to get all radii around each atom using new radii method:
+        # 1. get atom neighbors (up to distance or dynamically)
+        # 2. find radii for closest and add to official neighbors
+        # 3. go to next closest and get radii. See if they fit under planes made
+        # by other radii
+        # 4. Continue until all neighbors found. (Whats the best stop condition?)
+    # - rework BadELF voxel assignment using Numba. That should just be so much
+    # faster. I could probably even reimplement exact voxel splitting
     # - Update simmate workflows (and badelf -_- )
 
     
@@ -55,7 +78,6 @@ class ElfAnalyzer(Bader):
     def __init__(
         self,
         ignore_low_pseudopotentials: bool = False,
-        downscale_resolution: int = 200,
         shell_depth: float = 0.05,
         combine_shells: bool = True,
         min_covalent_charge: float = 0.6,
@@ -74,7 +96,6 @@ class ElfAnalyzer(Bader):
             logging.warning("A non-ELF reference file has been detected. Results my not be valid.")
         
         self.ignore_low_pseudopotentials = ignore_low_pseudopotentials
-        self.downscale_resolution = downscale_resolution
         
         # define cutoff variables
         # TODO: These should be hidden variables to allow for setter methods
@@ -124,18 +145,6 @@ class ElfAnalyzer(Bader):
             self._bifurcation_plot = self._get_bifurcation_plot()
         return self._bifurcation_plot
     
-    # @property
-    # def downscaled_reference_grid(self) -> Grid:
-    #     if self._downscaled_reference_grid is None:
-    #         self._get_downscale_grids()
-    #     return self._downscaled_reference_grid
-    
-    # @property
-    # def downscaled_labels(self) -> NDArray[np.int64]:
-    #     if self._downscaled_labels is None:
-    #         self._get_downscale_grids()
-    #     return self._downscaled_labels
-    
     @property
     def atomic_radii(self) -> NDArray[np.float64]:
         if self._atomic_radii is None:
@@ -166,13 +175,14 @@ class ElfAnalyzer(Bader):
         # get an initial graph connecting bifurcations and final basins
         self._initialize_bifurcation_graph()
         t_0 =time.time()
-        logging.info(f"Test Time: {t_0-t0}")
-        return self.bifurcation_graph
+        logging.info(f"Infinite Feature Time: {t_0-t0}")
         
-        self._assign_reducible_node_properties()
+        self._assign_contained_atoms()
+        t_1 =time.time()
+        
+        logging.info(f"Surrounded Atom Time: {t_1-t_0}")
         
         self._assign_irreducible_node_properties()
-        breakpoint()
         
         # assign node properties
         # TODO: Move a lot of this to the actual Node class (e.g. depth, 3d depth, charge etc)
@@ -180,7 +190,7 @@ class ElfAnalyzer(Bader):
         
         # First, we clean up the graph in case we removed a node earlier due
         # to incorrect labeling and this resulted in a fake split (e.g. Dy2C)
-        self._clean_reducible_nodes()
+        # self._clean_reducible_nodes()
         
         # Now we have a graph with information associated with each basin. We want
         # to label each node.
@@ -302,7 +312,7 @@ class ElfAnalyzer(Bader):
         connection_elfs = connection_array[connection_indices]
         
         basin_maxima_grid = np.round(self.reference_grid.frac_to_grid(self.basin_maxima_frac)).astype(np.int64) % self.reference_grid.shape
-        
+
         (
             bifurcation_values, 
             bifurcation_features, 
@@ -316,7 +326,6 @@ class ElfAnalyzer(Bader):
             neighbor_transforms,
                 )
         # breakpoint()
-        
         return bifurcation_values, bifurcation_features, bifurcation_feature_indices, bifurcation_dimensionalities
         
     
@@ -335,7 +344,7 @@ class ElfAnalyzer(Bader):
         # First, we add an initial node representing where all features are
         # connected at 0.0 ELF
         graph.add_node(
-            basins=[i for i in np.arange(len(self.basin_maxima_frac))],
+            basins=np.array([i for i in np.arange(len(self.basin_maxima_frac))], dtype=np.int64),
             min_elf=np.float64(0.0),
             dimensionality=3,
             is_infinite=True,
@@ -381,11 +390,12 @@ class ElfAnalyzer(Bader):
                 if getattr(parent_node, "max_elf", None) is None:
                     parent_node.max_elf = elf_value
                     parent_node.reducible = True
+                    parent_node.depth = parent_node.max_elf - parent_node.min_elf
                 
                 # Now we add the current node
                 node = graph.add_node(
                     parent=parent_node,
-                    basins=feat_basins,
+                    basins=np.array(feat_basins, dtype=np.int64),
                     min_elf=elf_value,
                     dimensionality=feat_dim,
                     is_infinite=feat_dim>0,
@@ -398,6 +408,7 @@ class ElfAnalyzer(Bader):
             if not node.reducible:
                 maxima_values = self.basin_maxima_ref_values[node.basins]
                 node.max_elf = maxima_values.max()
+                node.depth = node.max_elf - node.min_elf
         
         self._bifurcation_graph = graph
     
@@ -415,61 +426,48 @@ class ElfAnalyzer(Bader):
                 break
         return node.max_elf - ancestor.max_elf
     
-    def _assign_reducible_node_properties(self):
-        logging.info("Assigning reducible feature properties")
+    def _assign_contained_atoms(self):
+        logging.info("Finding contained atoms")
         graph = self.bifurcation_graph
         num_basins = len(self.basin_maxima_frac) 
         grid = self.reference_grid
         data = grid.total
-        # NOTE: Should I use just use shared faces instead?
         neighbor_transforms, _ = grid.point_neighbor_transforms
         basin_labels = self.basin_labels
         
-        # get information on reducible nodes
-        reducible_keys = []
-        basins = []
-        appear_at = []
-        disappear_at = []
+        # collect info on each node in numba friendly format
+        feature_basins = []
+        feature_min_elfs = []
+        feature_max_elfs = []
+        feature_dims = []
         for node in graph:
-            if node.reducible:
-                reducible_keys.append(node.key)
-                basins.append(node.basins)
-                appear_at.append(node.min_elf)
-                disappear_at.append(node.max_elf)
-        reducible_keys = np.array(reducible_keys, dtype=np.int64)
-        appear_at = np.array(appear_at, dtype=np.float64)
-        disappear_at = np.array(disappear_at, dtype=np.float64)
-        breakpoint()
+            feature_basins.append(node.basins)
+            feature_min_elfs.append(node.min_elf)
+            feature_max_elfs.append(node.max_elf)
+            feature_dims.append(node.dimensionality)
+        feature_min_elfs = np.array(feature_min_elfs, dtype=np.float64)
+        feature_max_elfs = np.array(feature_max_elfs, dtype=np.float64)
+        feature_dims = np.array(feature_dims, dtype=np.int64)
+
         # get atom grid coordinates
         atom_grid_coords = grid.frac_to_grid(self.structure.frac_coords)
         atom_grid_coords = np.round(atom_grid_coords).astype(np.int64) % grid.shape
         
-        # get the atoms contained in each feature using custom Numba method
-        feature_keys, feature_atoms = get_surrounded_atoms(
-            reducible_keys,
-            basins,
-            appear_at,
-            disappear_at,
-            basin_labels,
-            num_basins,
-            data,
-            atom_grid_coords,
-            neighbor_transforms,
-            )
-        
-        # assign properties
-        for key, atoms in zip(feature_keys, feature_atoms):
-            node = graph.node_from_key(key)
+        # get the atoms each feature contains
+        node_atoms = get_features_surrounding_atoms(
+                feature_basins=feature_basins,
+                feature_min_elfs=feature_min_elfs,
+                feature_max_elfs=feature_max_elfs,
+                feature_dims=feature_dims,
+                atom_grid_coords=atom_grid_coords,
+                neighbor_transforms=neighbor_transforms,
+                basin_labels=basin_labels,
+                data=data,
+                num_basins=num_basins,
+                )
+        # breakpoint()
+        for node, atoms in zip(graph, node_atoms):
             node.atoms = atoms
-            node.depth = node.max_elf - node.min_elf
-            
-        # assign zero atoms to nodes that don't surround an atom
-        for node in graph:
-            if not node.reducible:
-                continue
-            if getattr(node, "atoms", None) is None:
-                node.atoms = []
-                node.depth = node.max_elf - node.min_elf
             
     def _assign_irreducible_node_properties(self):
         logging.info("Assigning irreducible feature properties")
@@ -478,7 +476,7 @@ class ElfAnalyzer(Bader):
         # Loop over this graph and label each node with important information
         for node in graph:
             # get parent and included basins
-            parent = node.parent
+            # parent = node.parent
             basins = node.basins
             if node.reducible:
                 continue
@@ -486,21 +484,13 @@ class ElfAnalyzer(Bader):
             # This is an irreducible domain.
             # We want to store data relavent to the type of domain it might
             # be.
-            # First we get the maximum value at which this feature exists which
-            # we've already stored
-            max_elf = node.max_elf
-            # Now we get its "depth" which corresponds to the range of values
-            # where this feature exists.
-            depth = max_elf - parent.max_elf
-            # We also want to mark a type of depth corresponding to the
-            # point where this feature connected with an infinite domain.
 
-            depth_3d = self._get_depth_3d(node)
+            node.depth_3d = self._get_depth_3d(node)
             # Using this, we can find the average frac coords of the attractors
             # in this basin
             frac_coords = self.basin_maxima_frac[basins]
             if len(frac_coords) == 1:
-                frac_coord = frac_coords[0]
+                node.frac_coords = frac_coords[0]
             else:
                 # TODO: Check if this is necessary. With the updated Bader package
                 # no basin maxima should ever border each other, and all of them
@@ -514,172 +504,30 @@ class ElfAnalyzer(Bader):
                     empty_structure.append("He", frac_coord)
                 if len(empty_structure) > 1:
                     empty_structure.merge_sites(tol=1, mode="average")
-                frac_coord = empty_structure.frac_coords[0]
+                node.frac_coords = empty_structure.frac_coords[0]
 
             # We can also get the charge from the bader analysis
             charges = self.basin_charges[basins]
-            charge = charges.sum()
+            node.charge = charges.sum()
             # and the volumes
             volumes = self.basin_volumes[basins]
-            volume = volumes.sum()
+            node.volume = volumes.sum()
             # We can also get the distance of this feature to the nearest
             # atom and what that atom is. We have to assume we have several
             # basins, so we use the shortest distance and corresponding ato
             distances = self.basin_atom_dists[basins]
-            distance = distances.min()
-            nearest_atom = self.basin_atoms[basins][
-                np.where(distances == distance)[0][0]
+            node.atom_distance = distances.min()
+            node.nearest_atom = self.basin_atoms[basins][
+                np.where(distances == node.atom_distance)[0][0]
             ]
+            node.nearest_atom_type = self.structure[node.nearest_atom].specie.symbol
 
-            # Now we update this node with the information we gathered
-            node.max_elf = max_elf
-            node.depth = depth
-            node.depth_3d = depth_3d
-            node.charge = charge
-            node.volume = volume
-            node.atom_distance = distance
-            node.nearest_atom = nearest_atom
-            node.nearest_atom_type = self.structure[nearest_atom].specie.symbol
-            node.frac_coords = frac_coord
-    
-    # def _assign_node_properties(self):
-    #     # get bifurcation graph and bader object
-    #     graph = self.bifurcation_graph
-    #     # get downscaled graphs
-    #     downscaled_labels = self.downscaled_labels
-    #     downscaled_reference_grid = self.downscaled_reference_grid
-    #     checked_nodes = []
-    #     # Loop over this graph and label each node with important information
-    #     for node in track(graph, description="Calculating feature properties"):
-    #         checked_nodes.append(node.key)
-    #         # get parent and included basins
-    #         parent = node.parent
-    #         basins = node.basins
-    #         if node.reducible:
-    #             # this is a reducible domain. We want to get the atoms contained in
-    #             # this domain when it first appeared, as well as whether it was
-    #             # an infinite connection right before it split
-    #             if parent is not None:
-    #                 parent_split = parent.max_elf - 0.01
-    #                 low_elf_mask = np.isin(downscaled_labels, basins) & np.where(
-    #                     downscaled_reference_grid.total > parent_split, True, False
-    #                 )
-    #                 high_elf_mask = np.isin(
-    #                     downscaled_labels, basins
-    #                 ) & np.where(
-    #                     downscaled_reference_grid.total > (node.max_elf - 2 * 0.01), True, False
-    #                 )
-    #                 # TODO:
-    #                     # If I rework the methods for checking for surrounded
-    #                     # atoms or infinite features, I can probably move the
-    #                     # downscaled data to just be an array rather than a Grid object.
-    #                     # I can also probably fix the issues I had that require slight
-    #                     # buffering of the mask
-    #                 atoms = downscaled_reference_grid.get_atoms_surrounded_by_volume(low_elf_mask)
-    #                 # BUG-FIX we check if this feature is infinite right
-    #                 # before it split. This should fix issues with atomic
-    #                 # features in small cells that connect to themselves
-    #                 # by wrapping around the cell. In a larger cell, the
-    #                 # split would be noted, but it's not for these.
-    #                 is_infinite = downscaled_reference_grid.check_if_infinite_feature(high_elf_mask)
-    #             else:
-    #                 # if we have no parent this is our first node and
-    #                 # we have as many atoms as there are in the structure
-    #                 atoms = [i for i in range(len(self.structure))]
-    #                 # This is always infinite, so we note that by adding -1
-    #                 # to the front of our list
-    #                 is_infinite = True
-                
-    #             # set new attributes for this node
-    #             node.atoms = atoms
-    #             node.is_infinite = is_infinite
-    #             node.depth = node.max_elf - node.min_elf
-
-    #         else:
-    #             # This is an irreducible domain.
-    #             # We want to store data relavent to the type of domain it might
-    #             # be.
-    #             # First we get the maximum value at which this feature exists which
-    #             # we've already stored
-    #             max_elf = node.max_elf
-    #             # Now we get its "depth" which corresponds to the range of values
-    #             # where this feature exists.
-    #             depth = max_elf - parent.max_elf
-    #             # We also want to mark a type of depth corresponding to the
-    #             # point where this feature connected with an infinite domain.
-
-    #             depth_3d = self._get_depth_3d(node)
-    #             # Using this, we can find the average frac coords of the attractors
-    #             # in this basin
-    #             frac_coords = self.basin_maxima_frac[basins]
-    #             if len(frac_coords) == 1:
-    #                 frac_coord = frac_coords[0]
-    #             else:
-    #                 # TODO: Check if this is necessary. With the updated Bader package
-    #                 # no basin maxima should ever border each other, and all of them
-    #                 # should eventually reduce to a distinct basin.
-    #                 empty_structure = self.structure.copy()
-    #                 empty_structure.remove_oxidation_states()
-    #                 empty_structure.remove_species(empty_structure.symbol_set)
-    #                 # We append these to an empty structure and use pymatgen's
-    #                 # merge method to get their average position
-    #                 for frac_coord in frac_coords:
-    #                     empty_structure.append("He", frac_coord)
-    #                 if len(empty_structure) > 1:
-    #                     empty_structure.merge_sites(tol=1, mode="average")
-    #                 frac_coord = empty_structure.frac_coords[0]
-
-    #             # We can also get the charge from the bader analysis
-    #             charges = self.basin_charges[basins]
-    #             charge = charges.sum()
-    #             # and the volumes
-    #             volumes = self.basin_volumes[basins]
-    #             volume = volumes.sum()
-    #             # We can also get the distance of this feature to the nearest
-    #             # atom and what that atom is. We have to assume we have several
-    #             # basins, so we use the shortest distance and corresponding ato
-    #             distances = self.basin_atom_dists[basins]
-    #             distance = distances.min()
-    #             nearest_atom = self.basin_atoms[basins][
-    #                 np.where(distances == distance)[0][0]
-    #             ]
-
-    #             # Now we update this node with the information we gathered
-    #             node.max_elf = max_elf
-    #             node.depth = depth
-    #             node.depth_3d = depth_3d
-    #             node.charge = charge
-    #             node.volume = volume
-    #             node.atom_distance = distance
-    #             node.nearest_atom = nearest_atom
-    #             node.nearest_atom_type = self.structure[nearest_atom].specie.symbol
-    #             node.frac_coords = frac_coord
-
-    #     return graph
-    
-    def _clean_reducible_nodes(self):
-        # TODO: Is this still necessary with the updated BaderKit package?
+    def _mark_cores(self):
+        logging.info("Marking atomic cores")
+        elf_data = self.reference_grid.total
         graph = self.bifurcation_graph
-        for node in graph:
-            if not node.reducible:
-                continue
-
-            children = node.children
-            # check if we only have one child
-            if len(children) != 1:
-                continue
-            child = children[0]
-            # check if this child is reducible
-            if not child.reducible:
-                continue
-            # if both features have the same dimensionality, this node is not
-            # necessary
-            if node.dimensionality == child.dimensionality:
-                breakpoint()
-                child.min_elf = node.min_elf
-                child.depth = child.max_elf - child.min_elf
-                node.remove()
-
+        
+        
     
     def _mark_atomic(self):
         logging.info("Marking atomic features")
@@ -1018,7 +866,10 @@ class ElfAnalyzer(Bader):
             # greater.
             if child.max_elf > max_elf:
                 max_elf = child.max_elf
-                frac_coords = child.frac_coords
+                try:
+                    frac_coords = child.frac_coords
+                except:
+                    breakpoint()
             
             # update the value the feature appears at if lower. This
             # should get overwritten if we delete the parent node
