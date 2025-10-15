@@ -16,6 +16,7 @@ class NodeBase(ABC):
     
     _registry: Dict[str, Type["NodeBase"]] = {}
     node_type = None
+    feature_type = None
     is_reducible = False
     
     def __init__(
@@ -43,10 +44,9 @@ class NodeBase(ABC):
         if type(parent) == int:
             parent = bifurcation_graph.node_from_key(parent)
         
-        # check if our parent is None. If so, we are trying to set a root node
+        # check if our parent is None. If so, we add a new root node
         if parent is None:
-            assert bifurcation_graph._root_node is None, "Only one root node allowed per graph. Additional nodes must provide a parent."
-            bifurcation_graph._root_node = self
+            bifurcation_graph._root_nodes.append(self)
         else:
             parent._children.append(self)
         
@@ -56,7 +56,7 @@ class NodeBase(ABC):
         # create a key for this node
         if key is None:
             if len(bifurcation_graph) > 0:
-                key = max(self._node_keys.keys()) + 1
+                key = max(bifurcation_graph._node_keys.keys()) + 1
             else:
                 key = 0
         self.key = key
@@ -142,7 +142,10 @@ class NodeBase(ABC):
         for ancestor in self.ancestors:
             if ancestor.is_infinite:
                 break
-        return self.max_value - ancestor.max_value
+        try:
+            return self.max_value - ancestor.max_value
+        except:
+            breakpoint()
     
     @property
     def is_infinite(self):
@@ -169,6 +172,9 @@ class NodeBase(ABC):
     ###########################################################################
     # Properties that must be set by children or require additional steps
     ###########################################################################
+    @abstractproperty
+    def plot_label(self) -> None:
+        pass
     
     @abstractmethod
     def remove(self) -> None:
@@ -190,6 +196,7 @@ class NodeBase(ABC):
         "max_value": float(self.max_value),
         "parent": parent_key,
         "node_type": self.node_type,
+        "feature_type": self.feature_type,
             }
     
     @classmethod
@@ -203,6 +210,7 @@ class NodeBase(ABC):
 class ReducibleNode(NodeBase):
     
     node_type = "ReducibleNode"
+    feature_type = "reducible"
     is_reducible = True
     
     def __init__(self, **kwargs):
@@ -228,11 +236,14 @@ class ReducibleNode(NodeBase):
         return all_children
     
     def remove(self) -> None: 
-        # if this is the root, try to assigning child as the new root.
+        # if this is a root, each child will be a new root
         if self.parent is None:
-            assert len(self.children) == 1, "Root can only be deleted if it has a single child"
-            self.bifurcation_graph._root_node = self.children[0].index
-            self.children[0]._parent = None
+            # remove this node as a root
+            self.bifurcation_graph._root_nodes = [i for i in self.bifurcation_graph._root_nodes if i is not self]
+            # add each child as a root
+            for child in self.children:
+                self.bifurcation_graph._root_nodes.append(child)
+                child._parent = None
         else:
             # assign all children to parent
             for child in self.children:
@@ -243,37 +254,80 @@ class ReducibleNode(NodeBase):
         graph = self.bifurcation_graph
         graph._nodes = [i for i in graph._nodes if i is not self]
         del(graph._node_keys[self.key])
+        
+    @property
+    def plot_label(self) -> str:
+        lines = [
+            f"type: {self.feature_type}",
+            f"max value: {round(self.max_value, 4)}",
+            f"min value: {round(self.min_value, 4)}",
+            f"depth: {round(self.depth, 4)}",
+            f"contained atoms: {self.contained_atoms}",
+            f"dimensionality: {self.dimensionality}",
+        ]
+    
+        label = "<br>".join(lines)
+        return label
+
+
 
 class IrreducibleNode(NodeBase):
     
     is_reducible = False
     node_type = "IrreducibleNode"
+    feature_type = "irreducible" # Should get updated by analyzer eventually
     
     def __init__(
             self,
-            basin_type: str | None = None,
-            basin_subtype: str | None = None,
-            frac_coords: NDArray[float] | None = None,
-            charge: float | None = None,
-            volume: float | None = None,
-            nearest_atom: int | None = None,
-            nearest_atom_type: str | None = None,
-            atom_distance: float | None = None,
-            irreducible_type: str | None = "point",
+            frac_coords: NDArray[float],
+            charge: float,
+            volume: float,
+            nearest_atom: int,
+            nearest_atom_type: str,
+            atom_distance: float,
+            feature_type: str | None = "irreducible",
+            # irreducible_type: str | None = "point",
             **kwargs,
         ):
         super().__init__(**kwargs)
         
         # set each instance variable with typing
-        self.basin_type = basin_type
-        self.basin_subtype = basin_subtype
-        self.frac_coords = np.array(frac_coords)
+        self.feature_type = feature_type
+        self.frac_coords = np.array(frac_coords, dtype=np.float64)
+        # self.irreducible_type = irreducible_type
+        self.nearest_atom_type = nearest_atom_type
+
         self.charge = float(charge)
         self.volume = float(volume)
         self.nearest_atom = int(nearest_atom)
-        self.nearest_atom_type = nearest_atom_type
         self.atom_distance = float(atom_distance)
-        self.irreducible_type = irreducible_type
+        
+    @property
+    def plot_label(self) -> str:
+        lines = [
+            f"type: {self.feature_type}",
+            f"depth: {round(self.depth, 4)}",
+            f"depth to infinite feature: {round(self.depth_to_infinite, 4)}",
+            f"max value: {round(self.max_value, 4)}",
+            f"min value: {round(self.min_value, 4)}",
+            f"charge: {round(self.charge, 4)}",
+            f"volume: {round(self.volume, 4)}",
+            f"atom distance: {round(self.atom_distance, 4)}",
+            f"nearest atom index: {self.nearest_atom}",
+            f"nearest atom type: {self.nearest_atom_type}",
+        ]
+    
+        label = "<br>".join(lines)
+        return label
+
+    # TODO: Add information calculated later in the process. How should I treat
+    # these variables?
+        # if getattr(self, "bare_electron_indicator", None) is not None:
+        #     label += f'\nfeature radius: {round(self.feature_radius, 4)}'
+        #     label += f'\ndistance beyond atom: {round(self.dist_beyond_atom, 4)}'
+        #     label += f'\ncoord number: {round(self.coord_num, 4)}'
+        #     label += f'\ncoord atoms: {self.coord_atoms}'
+        #     label += f"\nBEI array: {self.bare_electron_scores.round(4)}"
     
     def remove(self) -> None: 
         # remove this node from the current parent's children
@@ -289,14 +343,12 @@ class IrreducibleNode(NodeBase):
         node_dict["frac_coords"] = [float(i) for i in self.frac_coords]
         # add other attributes
         for attr in [
-            "basin_type",
-            "basin_subtype",
+            "feature_type",
             "charge",
             "volume",
             "nearest_atom",
             "nearest_atom_type",
             "atom_distance",
-            "irreducible_type",
                 ]:
             node_dict[attr] = getattr(self, attr)
         return node_dict
