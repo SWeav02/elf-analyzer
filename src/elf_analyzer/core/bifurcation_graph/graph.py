@@ -163,7 +163,7 @@ class BifurcationGraph:
         
         t1 = time.time()
         logging.info(f"Time: {round(t1-t0, 2)}")
-        
+
         #######################################################################
         # Get Atoms Surrounded by Each Feature
         #######################################################################
@@ -187,7 +187,7 @@ class BifurcationGraph:
                 )
         t2 = time.time()
         logging.info(f"Time: {round(t2-t1, 2)}")
-        breakpoint()
+
         #######################################################################
         # Construct Graph
         #######################################################################    

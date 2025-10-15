@@ -111,6 +111,7 @@ def find_atom_features(
         solid,
         basin_labels,
         basin_feature_map,
+        all_features,
         connection_counts,
         void_roots,
         feature_dims,
@@ -141,7 +142,7 @@ def find_atom_features(
     # of the opposite type or it wouldn't be finite. This group will also always
     # have more surface area in contact with the feature/void than any other
     # group. In other words, the most connecting points.
-
+    
     while True:
         if is_void:
             # get dimensionality
@@ -155,9 +156,10 @@ def find_atom_features(
             is_void = False
         else:
             # add this feature to our list
-            surrounding_features.append(current_group)
+            feature_idx = all_features[current_group]
+            surrounding_features.append(feature_idx)
             # get its dimensionality
-            feature_dim = feature_dims[current_group]
+            feature_dim = feature_dims[feature_idx]
             # if the feature is infinite, it can't be surrounded and we break
             if feature_dim > 0:
                 break
@@ -174,6 +176,7 @@ def find_all_atom_features(
         solid,
         basin_labels,
         basin_feature_map,
+        all_features,
         connection_counts,
         void_roots,
         feature_dims,
@@ -199,6 +202,7 @@ def find_all_atom_features(
             solid,
             basin_labels,
             basin_feature_map,
+            all_features,
             connection_counts,
             void_roots,
             feature_dims,
@@ -317,6 +321,7 @@ def get_features_surrounding_atoms(
                 solid=new_solid,
                 basin_labels=basin_labels,
                 basin_feature_map=basin_feature_map,
+                all_features=all_features,
                 connection_counts=connection_counts,
                 void_roots=roots,
                 feature_dims=feature_dims,
@@ -331,10 +336,8 @@ def get_features_surrounding_atoms(
                 continue
             no_atoms_surrounded = False
             for feature_idx in feature_list: # skip placeholder value
-                # get the features original index
-                orig_feature_idx = all_features[feature_idx]
-                if orig_feature_idx in new_features:
-                    feature_atoms[orig_feature_idx].append(atom_idx)
+                if feature_idx in new_features:
+                    feature_atoms[feature_idx].append(atom_idx)
         # if no atoms are surrounded, they never will be again and we are done
         # here
         if no_atoms_surrounded:
