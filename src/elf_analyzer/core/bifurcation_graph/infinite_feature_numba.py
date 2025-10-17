@@ -15,13 +15,13 @@ def find_connections(
         neighbor_transforms: NDArray[np.int64],
         ):
     """
-    Finds the maximum ELF value at which each basin pair connects
+    Finds the values at which basins connect to on another locally
     """
     nx, ny, nz = labeled_array.shape
-    no_neigh_val = basin_num + 1
-    # create an array to track potential bifurcation values
-    bif_data = np.empty_like(data, dtype=np.float64)
-    bif_labels = np.empty_like(data, dtype=np.uint16)
+
+    # create arrays to track connection values
+    conn_values = np.empty_like(data, dtype=np.float64)
+    conn_neighs = np.empty_like(data, dtype=np.uint16)
     
     # loop over edges and calculate their potential bifurcation values
     for i in prange(nx):
@@ -35,13 +35,19 @@ def find_connections(
                 label = labeled_array[i,j,k]
                 if label == -1:
                     # shouldn't happen if bader is working properly
-                    bif_labels[i,j,k] = no_neigh_val
                     continue
                 
                 value = data[i,j,k]
-                # trackers for the highest neighbor still below this point
-                best_value = -1e12 # extremely low value
-                best_label = -1
+                
+                # we want to find the highest value that connects this point
+                # to one of its neighbors (in another basin). This is the first
+                # value at which a new connection would occur due to this point.
+                # We also want to find the other point partaking in this connection.
+                # if there are multiple possibilities, we want the one with the
+                # lowest value.
+                best_lower_conn_val = -1e12 # extremely low value
+                best_upper_conn_val = 1e12
+                conn_neigh = -1
                 # loop over neighbors
                 for si, sj, sk in neighbor_transforms:
                     # wrap points
@@ -56,32 +62,40 @@ def find_connections(
                         continue
                     
                     neigh_value = data[ii,jj,kk]
-                    # skip neighs higher than the current point
-                    if neigh_value > value:
+                    
+                    # get the value at which the points would connect if scanning
+                    # up the ELF
+                    lower_conn_value = min(value, neigh_value)
+                    
+                    # skip if this is lower than the current best
+                    if lower_conn_value < best_lower_conn_val:
                         continue
                     
-                    # these two points connect at this neighbors value. If it
-                    # is higher than any previous, it is the new highest point
-                    # at which these two basins connect across the current point
-                    if neigh_value > best_value:
-                        best_value = neigh_value
-                        best_label = neigh_label
-                        
-                # note if this point had no lower neighs
-                if best_label == -1:
-                    bif_labels[i,j,k] = no_neigh_val
-                    continue
+                    upper_conn_value = max(value, neigh_value)
+                    # if this connection is better than previous ones, update
+                    if lower_conn_value > best_lower_conn_val:
+                        best_lower_conn_val = lower_conn_value
+                        best_upper_conn_val = upper_conn_value
+                        conn_neigh = neigh_label
+                    elif lower_conn_value == best_lower_conn_val and upper_conn_value < best_upper_conn_val:
+                        best_upper_conn_val = upper_conn_value
+                        conn_neigh = neigh_label
+
                 # note the highest connected basin still below this point
-                bif_data[i,j,k] = best_value
-                bif_labels[i,j,k] = best_label
+                conn_values[i,j,k] = best_lower_conn_val
+                conn_neighs[i,j,k] = conn_neigh
     
     # Now we have a record of the highest point at which each point connects to
     # another basin. A point is a bifurcation if none of the adjacent neighbors in the
     # same basin connect to the same neighboring basin at a higher value and if
     # none of the adjacent neighbors in the neighboring basin have a higher value
     lower_points = []
-    higher_points = []
+    upper_points = []
     values = []
+    
+    # TODO: This could actually be done in parallel and then the results collected
+    # into lists in an additional loop. I'm just not sure how much faster that
+    # would be and it would increase memory usage
     
     # loop over each edge voxel
     for i in range(nx):
@@ -92,13 +106,13 @@ def find_connections(
                     continue
                 
                 label = labeled_array[i,j,k]
-                bif_label = bif_labels[i,j,k]
-                # skip points with no lower neighbors
-                if bif_label == no_neigh_val or label == -1:
+                if label == -1:
+                    # shouldn't happen if bader is working properly
                     continue
                 
-                # get this points possible bifurcation value
-                bif_value = bif_data[i,j,k]
+                # get the label of the connected basin and the value they connect at
+                conn_neigh = conn_neighs[i,j,k]
+                conn_value = conn_values[i,j,k]
                 
                 is_bif = True
                 # loop over neighbors
@@ -110,93 +124,36 @@ def find_connections(
                         continue
                     
                     neigh_label = labeled_array[ii, jj, kk]
-                    neigh_bif_label = bif_labels[ii,jj,kk]
-                    
-                    # skip neighs with no lower values or that are vacuum
-                    if neigh_bif_label == no_neigh_val or neigh_label == -1:
+                    # skip neighbors without labels
+                    if neigh_label == -1:
                         continue
                     
-                    # skip neighs that have a lower bifurcation value
-                    neigh_bif_value = bif_data[ii,jj,kk]
-                    if neigh_bif_value <= bif_value:
+                    # skip neighs with lower connection values
+                    neigh_conn_value = conn_values[ii,jj,kk]
+                    if neigh_conn_value <= conn_value:
                         continue
                     
-                    # We have a neighbor with a higher bifurcation value. If
-                    # it connects across the same pair of basins, this is not
-                    # a bifurcation
+                    # get this neighbors connected basin
+                    neigh_conn_neigh = conn_neighs[ii,jj,kk]
+                    
+                    # if the neighbor has the same basin connection pair, this
+                    # is not a bifurcation
                     if (
-                        (neigh_label == label and neigh_bif_label == bif_label)
-                    or (neigh_label == bif_label and neigh_bif_label == label)
+                        (neigh_label == label and neigh_conn_neigh == conn_neigh)
+                    or (neigh_label == conn_neigh and neigh_conn_neigh == label)
                     ):
                         is_bif = False
                         break
 
                 # if this is a bifurcation, add it to our list
                 if is_bif:
-                    lower_points.append(bif_label)
-                    higher_points.append(label)
-                    values.append(bif_value)
+                    lower_label = min(label, conn_neigh)
+                    upper_label = max(label, conn_neigh)
+                    lower_points.append(lower_label)
+                    upper_points.append(upper_label)
+                    values.append(conn_value)
                     
-    return lower_points, higher_points, values
-
-# @njit(cache=True)
-# def find_connections(
-#         labeled_array: NDArray[np.int64],
-#         data: NDArray[np.float64],
-#         # edge_voxels,
-#         edge_mask,
-#         basin_num: np.int64,
-#         neighbor_transforms: NDArray[np.int64],
-#         ):
-#     """
-#     Finds the maximum ELF value at which each basin pair connects
-#     """
-#     nx, ny, nz = labeled_array.shape
-#     # create a 2D array for tracking connections.
-#     # TODO: We could potentially reduce this by using lists as basins will never
-#     # include connections to basins with lower indices
-#     connection_array = np.zeros((basin_num, basin_num), dtype=np.float64)
-#     # loop over each edge voxel
-#     # for i, j, k in edge_voxels:
-#     for i in range(nx):
-#         for j in range(ny):
-#             for k in range(nz):
-#                 # skip points that aren't on the edge
-#                 if not edge_mask[i,j,k]:
-#                     continue
-                
-#                 # get this points elf value and basin label
-#                 value = data[i,j,k]
-#                 label = labeled_array[i,j,k]
-#                 if label == -1:
-#                     # This shouldn't happen if bader is working properly, but if it does
-#                     # we don't want to use this label
-#                     continue
-#                 # loop over the neighbors
-#                 for si, sj, sk in neighbor_transforms:
-#                     # wrap points
-#                     ii, jj, kk = wrap_point(i + si, j + sj, k + sk, nx, ny, nz)
-#                     # get the label at this point
-#                     neigh_label = labeled_array[ii,jj,kk]
-#                     # skip if this is part of the same basin
-#                     if neigh_label == label or neigh_label == -1:
-#                         continue
-#                     # otherwise, get the value at this neighbor
-#                     neigh_value = data[ii,jj,kk]
-#                     # the value at which these two points 'connect' when visualizing the
-#                     # isosurface is the lower value.
-#                     lower_elf = min(value, neigh_value)
-#                     # we want to find the highest connection point for this pair of basins,
-#                     # which we store in our connection array. The highest value for each
-#                     # pair is located at index n, m where n is the lower label value
-#                     lower_label = min(label, neigh_label)
-#                     higher_label = max(label, neigh_label)
-#                     # compare our values and if this is higher, update it
-#                     if lower_elf > connection_array[lower_label, higher_label]:
-#                         connection_array[lower_label, higher_label] = lower_elf
-            
-#     # return connection array
-#     return connection_array
+    return np.array(lower_points, dtype=np.int64), np.array(upper_points, dtype=np.int64), np.array(values, dtype=np.float64)
 
 @njit(cache=True)
 def find_root(parent, x):

@@ -129,25 +129,33 @@ class BifurcationGraph:
         #     len(bader.basin_maxima_frac),
         #     neighbor_transforms,
         #     )
-        lower_points, higher_points, values = find_connections(
+        lower_points, upper_points, connection_values = find_connections(
             bader.basin_labels,
             reference_grid.total,
             bader.basin_edges,
             len(bader.basin_maxima_frac),
             neighbor_transforms,
             )
-        # TODO: get unique pairings/values and add connections to self
-        breakpoint()
-        # also add the maximum value of each basin as the point it 'connects' to
-        # itself
+        # add maxima values as the points each basin "connects" to itself
         basin_maxima = bader.basin_maxima_ref_values
         basin_indices = np.arange(len(basin_maxima))
-        connection_array[basin_indices, basin_indices] = basin_maxima
+        lower_points = np.append(lower_points, basin_indices)
+        upper_points = np.append(upper_points, basin_indices)
+        connection_values = np.append(connection_values, basin_maxima)
         
-        connection_indices = np.nonzero(connection_array)
-        connection_pairs = np.column_stack(connection_indices)  # same as argwhere result
-        connection_elfs = connection_array[connection_indices]
+        # group and get unique
+        connection_array = np.column_stack((lower_points, upper_points, connection_values))
+        unique_connections, unique_indices = np.unique(connection_array, return_index=True, axis=0)
         
+        # get pairs of connections
+        lower_points = lower_points[unique_indices]
+        upper_points = upper_points[unique_indices]
+        connection_pairs=np.column_stack((lower_points, upper_points))
+        
+        # get values of connections
+        connection_values = connection_values[unique_indices]
+        
+        # breakpoint()
         basin_maxima_grid = np.round(bader.reference_grid.frac_to_grid(bader.basin_maxima_frac)).astype(np.int64)
         basin_maxima_grid %= bader.reference_grid.shape
         
@@ -161,7 +169,7 @@ class BifurcationGraph:
             feature_parents,
             ) = find_bifurcations(
             connection_pairs,
-            connection_elfs,
+            connection_values,
             basin_maxima_grid,
             basin_maxima_ref_values,
             reference_grid.total,
