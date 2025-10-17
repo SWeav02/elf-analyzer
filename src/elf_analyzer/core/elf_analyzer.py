@@ -25,16 +25,7 @@ from baderkit.core import Grid, Bader
 from baderkit.core.toolkit import Format
 
 # from elf_analyzer.core.utilities import BifurcationGraph, IonicRadiiTools
-from elf_analyzer.core.utilities.numba_functions import (
-    check_all_covalent,
-    # find_connections,
-    )
-# from elf_analyzer.core.utilities.solid_dimensionality_test import (
-#     find_bifurcations
-#     )
-# from elf_analyzer.core.utilities.surrounds_atom_test import (
-#     get_features_surrounding_atoms
-#     )
+from elf_analyzer.core.utilities.numba_functions import check_all_covalent
 
 from elf_analyzer.core.bifurcation_graph import BifurcationGraph
 
@@ -176,12 +167,13 @@ class ElfAnalyzer(Bader):
 
         # get an initial graph connecting bifurcations and final basins
         self._initialize_bifurcation_graph()
+        
+        # Now we have a graph with information associated with each basin. We want
+        # to label each node.
+        self._mark_cores()
         plot = self.bifurcation_graph.get_plot()
         plot.write_html("test1.html")
         breakpoint()
-        # Now we have a graph with information associated with each basin. We want
-        # to label each node.
-        self._mark_atomic()
         
         # Now we want to label our valence features as Covalent, Metallic, or bare electron.
         # Many covalent and metallic features are easy to find. Covalent bonds
@@ -269,12 +261,16 @@ class ElfAnalyzer(Bader):
 
     def _mark_cores(self):
         logging.info("Marking atomic cores")
-        # cores will have a maximum within a voxel of an atom
+        # cores are reducible domains that contain an atom. They should be within
+        # one voxel of the atom. We must check for this as it is possible for
+        # a different type of basin to contain the atom if too few valence electrons
+        # are in the pseudopotential
         max_dist = self.reference_grid.max_point_dist
         for node in self.bifurcation_graph.unassigned_irreducible_nodes:
+            if len(node.contained_atoms) != 1:
+                continue
             if node.atom_distance <= max_dist:
-                node.basin_type = "atom"
-                node.basin_subtype = "core"
+                node.feature_type = "core"
                 
     def _mark_shells(self):
         logging.info("Marking atomic shells")
@@ -962,216 +958,6 @@ class ElfAnalyzer(Bader):
     ###########################################################################
     # Post Graph Construction
     ###########################################################################
-    
-#     def _get_bifurcation_plot(self):
-#         """
-#         Returns a plotly figure
-#         """
-#         indices = []
-#         end_indices = []
-#         # X position is determined by the ELF value at which the feature appears.
-#         Xn = []
-#         Xn1 = []  # Used for depth
-#         labels = []
-#         types = []
-#         for i, node in enumerate(self.bifurcation_graph):
-#             indices.append(node.key)
-#             if not node.reducible or getattr(node, "basin_subtype", None) == "shell":
-#                 if node.depth > 0.01:
-#                     Xn1.append(node.max_elf)
-#                 else:
-#                     Xn1.append(node.max_elf - node.depth + 0.01)
-#                 end_indices.append(i)
-#                 # Get label with rounded values
-#                 label = f"""type: {node.basin_subtype}
-# depth: {round(node.depth, 4)}
-# depth to inf connection: {round(node.depth_to_infinite, 4)}
-# max elf: {round(node.max_elf, 4)}
-# charge: {round(node.charge, 4)}
-# volume: {round(node.volume, 4)}
-# atom distance: {round(node.atom_distance, 4)}
-# nearest atom index: {node.nearest_atom}
-# nearest atom type: {node.nearest_atom_type}"""
-#                 if getattr(node, "bare_electron_indicator", None) is not None:
-#                     label += f'\nfeature radius: {round(node.feature_radius, 4)}'
-#                     label += f'\ndistance beyond atom: {round(node.dist_beyond_atom, 4)}'
-#                     label += f'\ncoord number: {round(node.coord_num, 4)}'
-#                     label += f'\ncoord atoms: {node.coord_atoms}'
-#                     label += f"\nBEI array: {node.bare_electron_scores.round(4)}"
-#                 types.append(node.basin_subtype)
-#             else:
-#                 Xn1.append(-1)
-#                 atom_num = len(node.atoms)
-#                 if node.is_infinite:
-#                     atom_num = "infinite"
-#                 label = f"""type: reducible
-# contained atoms: {node.atoms}
-# total contained atoms: {atom_num}
-# depth: {round(node.depth, 4)}
-# dimensionality: {node.dimensionality}"""
-#                 types.append("reducible")
-#             # change to html line break
-#             label = label.replace("\n", "<br>")
-#             labels.append(label)
-#             parent = node.parent
-#             if parent is not None:
-#                 Xn.append(round(parent.max_elf, 4))
-#             else:
-#                 Xn.append(0)
-
-        
-#         def assign_y_positions(graph, node, y_counter, y_positions):
-#             # This function iteratively loops starting from the root node and
-#             # places each parent node at the average position of its children.
-#             # children are placed when found. The iterative nature results in
-#             # connecting lines not overlapping.
-#             children = node.children
-#             if len(children) == 0:  # it's a leaf
-#                 y_positions[node.key] = next(y_counter)
-#             else:
-#                 for child in children:
-#                     assign_y_positions(graph, child, y_counter, y_positions)
-#                 child_ys = [y_positions[child.key] for child in children]
-#                 y_positions[node.key] = np.mean(child_ys)
-#         # Create a mapping from node ID to Y position
-#         y_positions = {}
-#         y_counter = itertools.count(0)  # This gives 0, 1, 2, ... for leaf placement
-        
-#         # for root in root_nodes:
-#         assign_y_positions(self.bifurcation_graph, self.bifurcation_graph.root_node, y_counter, y_positions)
-
-#         # Then set Yn using this
-#         Yn = [y_positions[i] for i in indices]
-        
-#         # Normalize Y scale
-#         max_y = 2
-#         Yn = np.array(Yn, dtype=float)
-#         Yn -= Yn.min()
-#         if Yn.max() > 0:
-#             Yn /= Yn.max()
-#             Yn *= max_y
-#         # Get how spread out each node is
-#         y_division = max_y / len(end_indices)
-#         # breakpoint()
-#         # Now we need to get the lines that will be used for each edge. These will use
-#         # a nested lists where each edge has one entry and the sub-lists contain the
-#         # two x and y entries for each edge.
-#         Xe = []
-#         Ye = []
-#         for node in self.bifurcation_graph.nodes:
-#             parent = node.key
-#             children = node.children
-#             for child_node in children:
-#                 child = child_node.key
-#                 px = Xn[indices.index(parent)]
-#                 py = Yn[indices.index(parent)]
-#                 cx = Xn[indices.index(child)]
-#                 cy = Yn[indices.index(child)]
-        
-#                 # Vertical segment: (px, py) -> (px, cy)
-#                 Xe.extend([px, px, None])
-#                 Ye.extend([py, cy, None])
-        
-#                 # Horizontal segment: (px, cy) -> (cx, cy)
-#                 Xe.extend([px, cx, None])
-#                 Ye.extend([cy, cy, None])
-        
-#         # create the figure and add the lines and nodes
-#         fig = go.Figure()
-#         fig.add_trace(
-#             go.Scatter(
-#                 x=Xe,
-#                 y=Ye,
-#                 mode="lines",
-#                 name="connection",
-#                 line=dict(color="rgb(210,210,210)", width=3),
-#                 hoverinfo="none",
-#             )
-#         )
-
-
-#         # convert lists to numpy arrays for easy querying.
-#         types = np.array(types)
-#         labels = np.array(labels)
-#         Xn = np.array(Xn)
-#         Xn1 = np.array(Xn1)
-#         Yn = np.array(Yn)
-#         Yn0 = Yn - y_division / 3
-#         Yn1 = Yn + y_division / 3
-#         already_added_types = set()
-#         for idx in range(len(Xn)):
-#             # get color
-#             basin_type = types[idx]
-#             # add nodes for each type of point
-#             # for basin_type in np.unique(types):
-#             # Color code by type
-#             if basin_type == "reducible":
-#                 color = "rgba(128, 128, 128, 1)"  # grey
-#             elif basin_type == "shell" or basin_type == "core":
-#                 color = "rgba(0, 0, 0, 1)"  # black
-#             elif basin_type == "covalent":
-#                 color = "rgba(0, 255, 255, 1)"  # aqua
-#             elif basin_type == "metallic":
-#                 color = "rgba(192, 192, 192, 1)"  # silver
-#             elif basin_type == "lone-pair":
-#                 color = "rgba(128, 0, 128, 1)"  # purple
-#             elif basin_type == "bare electron":
-#                 color = "rgba(128, 0, 0, 1)"  # maroon
-
-#             showlegend = basin_type not in already_added_types
-#             already_added_types.add(basin_type)
-#             sub_label = labels[idx]
-#             if Xn1[idx] == -1:
-#                 fig.add_trace(
-#                     go.Scatter(
-#                         x=[Xn[idx]],
-#                         y=[Yn[idx]],
-#                         mode="markers",
-#                         name=f"{basin_type}",
-#                         marker=dict(
-#                             symbol="circle-dot",
-#                             size=18,
-#                             color=color,  #'#DB4551',
-#                             line=dict(color="grey", width=1),
-#                         ),
-#                         text=sub_label,
-#                         hoverinfo="text",
-#                         showlegend=showlegend,
-#                     )
-#                 )
-#             else:
-#                 x0 = Xn[idx]
-#                 x1 = Xn1[idx]
-#                 y0 = Yn0[idx]
-#                 y1 = Yn1[idx]
-#                 fig.add_trace(
-#                     go.Scatter(
-#                         x=[x0, x1, x1, x0, x0],
-#                         y=[y0, y0, y1, y1, y0],
-#                         fill="toself",
-#                         fillcolor=color,
-#                         line=dict(color="grey"),
-#                         hoverinfo="text",
-#                         text=sub_label,
-#                         name=f"{basin_type}",
-#                         mode="lines",
-#                         opacity=0.8,
-#                         showlegend=showlegend,
-#                     )
-#                 )
-
-#         # remove y axis label
-#         fig.update_layout(
-#             margin=dict(l=0, r=0, t=0, b=0),
-#             xaxis=dict(range=[-0.1, 1], title="ELF"),
-#             yaxis=dict(
-#                 showline=False,
-#                 zeroline=False,
-#                 showgrid=False,
-#                 showticklabels=False,
-#             ),
-#         )
-#         return fig
 
     def get_feature_structure(
             self, 

@@ -104,7 +104,7 @@ def get_connected_voids(
         connection_counts,
         )
 
-@njit(cache=True)
+# @njit(cache=True)
 def find_atom_features(
         atom_coords,
         parent,
@@ -119,11 +119,12 @@ def find_atom_features(
         surrounding_features,
         ):
     nx, ny, nz = basin_labels.shape
+    ny_nz = ny*nz
     i,j,k = atom_coords
 
     # get the void or feature the atom sits in
     if solid[i,j,k]:
-        atom_flat_idx = coords_to_flat(i,j,k,ny,nz)
+        atom_flat_idx = coords_to_flat(i,j,k,ny_nz,nz)
         root = find_root_no_compression(parent, atom_flat_idx)
         current_group = np.searchsorted(void_roots, root)
         is_void = True
@@ -169,7 +170,7 @@ def find_atom_features(
             is_void = True
     return surrounding_features
     
-@njit(parallel=True,cache=True)
+# @njit(parallel=True,cache=True)
 def find_all_atom_features(
         atom_grid_coords,
         parent,
@@ -209,9 +210,10 @@ def find_all_atom_features(
             void_dims,
             surrounding_features,
             )
+
     return all_surrounding_features
 
-@njit(cache=True)
+# @njit(cache=True)
 def get_features_surrounding_atoms(
         feature_basins,
         feature_min_values,

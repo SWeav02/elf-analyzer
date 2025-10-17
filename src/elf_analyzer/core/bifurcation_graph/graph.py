@@ -399,10 +399,15 @@ class BifurcationGraph:
                     )
                 )
 
+        
+        min_x = min(Xn)
+        max_x = max(Xn1)
+        x_range = max_x - min_x
+        buffer = x_range * 0.05
         # remove y axis label and add title
         fig.update_layout(
             margin=dict(l=0, r=0, t=0, b=0),
-            xaxis=dict(range=[-0.1, 1], title=f"{self.labeler} Bifurcations"),
+            xaxis=dict(range=[min_x-buffer, max_x+buffer], title=f"{self.labeler} Bifurcations"),
             yaxis=dict(
                 showline=False,
                 zeroline=False,
