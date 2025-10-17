@@ -6,11 +6,10 @@ from numba import njit, prange
 
 from baderkit.core.methods.shared_numba import wrap_point
 
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def find_connections(
         labeled_array: NDArray[np.int64],
         data: NDArray[np.float64],
-        # edge_voxels,
         edge_mask,
         basin_num: np.int64,
         neighbor_transforms: NDArray[np.int64],
@@ -19,13 +18,13 @@ def find_connections(
     Finds the maximum ELF value at which each basin pair connects
     """
     nx, ny, nz = labeled_array.shape
-    # create a 2D array for tracking connections.
-    # TODO: We could potentially reduce this by using lists as basins will never
-    # include connections to basins with lower indices
-    connection_array = np.zeros((basin_num, basin_num), dtype=np.float64)
-    # loop over each edge voxel
-    # for i, j, k in edge_voxels:
-    for i in range(nx):
+    no_neigh_val = basin_num + 1
+    # create an array to track potential bifurcation values
+    bif_data = np.empty_like(data, dtype=np.float64)
+    bif_labels = np.empty_like(data, dtype=np.uint16)
+    
+    # loop over edges and calculate their potential bifurcation values
+    for i in prange(nx):
         for j in range(ny):
             for k in range(nz):
                 # skip points that aren't on the edge
@@ -33,37 +32,171 @@ def find_connections(
                     continue
                 
                 # get this points elf value and basin label
-                elf_value = data[i,j,k]
                 label = labeled_array[i,j,k]
                 if label == -1:
-                    # This shouldn't happen if bader is working properly, but if it does
-                    # we don't want to use this label
+                    # shouldn't happen if bader is working properly
+                    bif_labels[i,j,k] = no_neigh_val
                     continue
-                # loop over the neighbors
+                
+                value = data[i,j,k]
+                # trackers for the highest neighbor still below this point
+                best_value = -1e12 # extremely low value
+                best_label = -1
+                # loop over neighbors
                 for si, sj, sk in neighbor_transforms:
                     # wrap points
                     ii, jj, kk = wrap_point(i + si, j + sj, k + sk, nx, ny, nz)
-                    # get the label at this point
+                    # skip non-edges
+                    if not edge_mask[ii,jj,kk]:
+                        continue
+                    
                     neigh_label = labeled_array[ii,jj,kk]
-                    # skip if this is part of the same basin
+                    # skip points in the same basin
                     if neigh_label == label or neigh_label == -1:
                         continue
-                    # otherwise, get the value at this neighbor
-                    neigh_elf_value = data[ii,jj,kk]
-                    # the value at which these two points 'connect' when visualizing the
-                    # isosurface is the lower value.
-                    lower_elf = min(elf_value, neigh_elf_value)
-                    # we want to find the highest connection point for this pair of basins,
-                    # which we store in our connection array. The highest value for each
-                    # pair is located at index n, m where n is the lower label value
-                    lower_label = min(label, neigh_label)
-                    higher_label = max(label, neigh_label)
-                    # compare our values and if this is higher, update it
-                    if lower_elf > connection_array[lower_label, higher_label]:
-                        connection_array[lower_label, higher_label] = lower_elf
+                    
+                    neigh_value = data[ii,jj,kk]
+                    # skip neighs higher than the current point
+                    if neigh_value > value:
+                        continue
+                    
+                    # these two points connect at this neighbors value. If it
+                    # is higher than any previous, it is the new highest point
+                    # at which these two basins connect across the current point
+                    if neigh_value > best_value:
+                        best_value = neigh_value
+                        best_label = neigh_label
+                        
+                # note if this point had no lower neighs
+                if best_label == -1:
+                    bif_labels[i,j,k] = no_neigh_val
+                    continue
+                # note the highest connected basin still below this point
+                bif_data[i,j,k] = best_value
+                bif_labels[i,j,k] = best_label
+    
+    # Now we have a record of the highest point at which each point connects to
+    # another basin. A point is a bifurcation if none of the adjacent neighbors in the
+    # same basin connect to the same neighboring basin at a higher value and if
+    # none of the adjacent neighbors in the neighboring basin have a higher value
+    lower_points = []
+    higher_points = []
+    values = []
+    
+    # loop over each edge voxel
+    for i in range(nx):
+        for j in range(ny):
+            for k in range(nz):
+                # skip points that aren't on the edge
+                if not edge_mask[i,j,k]:
+                    continue
+                
+                label = labeled_array[i,j,k]
+                bif_label = bif_labels[i,j,k]
+                # skip points with no lower neighbors
+                if bif_label == no_neigh_val or label == -1:
+                    continue
+                
+                # get this points possible bifurcation value
+                bif_value = bif_data[i,j,k]
+                
+                is_bif = True
+                # loop over neighbors
+                for si, sj, sk in neighbor_transforms:
+                    # wrap points
+                    ii, jj, kk = wrap_point(i + si, j + sj, k + sk, nx, ny, nz)
+                    # skip non-edges
+                    if not edge_mask[ii,jj,kk]:
+                        continue
+                    
+                    neigh_label = labeled_array[ii, jj, kk]
+                    neigh_bif_label = bif_labels[ii,jj,kk]
+                    
+                    # skip neighs with no lower values or that are vacuum
+                    if neigh_bif_label == no_neigh_val or neigh_label == -1:
+                        continue
+                    
+                    # skip neighs that have a lower bifurcation value
+                    neigh_bif_value = bif_data[ii,jj,kk]
+                    if neigh_bif_value <= bif_value:
+                        continue
+                    
+                    # We have a neighbor with a higher bifurcation value. If
+                    # it connects across the same pair of basins, this is not
+                    # a bifurcation
+                    if (
+                        (neigh_label == label and neigh_bif_label == bif_label)
+                    or (neigh_label == bif_label and neigh_bif_label == label)
+                    ):
+                        is_bif = False
+                        break
+
+                # if this is a bifurcation, add it to our list
+                if is_bif:
+                    lower_points.append(bif_label)
+                    higher_points.append(label)
+                    values.append(bif_value)
+                    
+    return lower_points, higher_points, values
+
+# @njit(cache=True)
+# def find_connections(
+#         labeled_array: NDArray[np.int64],
+#         data: NDArray[np.float64],
+#         # edge_voxels,
+#         edge_mask,
+#         basin_num: np.int64,
+#         neighbor_transforms: NDArray[np.int64],
+#         ):
+#     """
+#     Finds the maximum ELF value at which each basin pair connects
+#     """
+#     nx, ny, nz = labeled_array.shape
+#     # create a 2D array for tracking connections.
+#     # TODO: We could potentially reduce this by using lists as basins will never
+#     # include connections to basins with lower indices
+#     connection_array = np.zeros((basin_num, basin_num), dtype=np.float64)
+#     # loop over each edge voxel
+#     # for i, j, k in edge_voxels:
+#     for i in range(nx):
+#         for j in range(ny):
+#             for k in range(nz):
+#                 # skip points that aren't on the edge
+#                 if not edge_mask[i,j,k]:
+#                     continue
+                
+#                 # get this points elf value and basin label
+#                 value = data[i,j,k]
+#                 label = labeled_array[i,j,k]
+#                 if label == -1:
+#                     # This shouldn't happen if bader is working properly, but if it does
+#                     # we don't want to use this label
+#                     continue
+#                 # loop over the neighbors
+#                 for si, sj, sk in neighbor_transforms:
+#                     # wrap points
+#                     ii, jj, kk = wrap_point(i + si, j + sj, k + sk, nx, ny, nz)
+#                     # get the label at this point
+#                     neigh_label = labeled_array[ii,jj,kk]
+#                     # skip if this is part of the same basin
+#                     if neigh_label == label or neigh_label == -1:
+#                         continue
+#                     # otherwise, get the value at this neighbor
+#                     neigh_value = data[ii,jj,kk]
+#                     # the value at which these two points 'connect' when visualizing the
+#                     # isosurface is the lower value.
+#                     lower_elf = min(value, neigh_value)
+#                     # we want to find the highest connection point for this pair of basins,
+#                     # which we store in our connection array. The highest value for each
+#                     # pair is located at index n, m where n is the lower label value
+#                     lower_label = min(label, neigh_label)
+#                     higher_label = max(label, neigh_label)
+#                     # compare our values and if this is higher, update it
+#                     if lower_elf > connection_array[lower_label, higher_label]:
+#                         connection_array[lower_label, higher_label] = lower_elf
             
-    # return connection array
-    return connection_array
+#     # return connection array
+#     return connection_array
 
 @njit(cache=True)
 def find_root(parent, x):
@@ -453,9 +586,11 @@ def find_bifurcations(
     nx, ny, nz = data.shape
     ny_nz = ny*nz
     N = nx * ny * nz
+    
+    num_basins = len(basin_maxima_grid)
 
     # get all possible elf values and flip to move from high to low
-    possible_elf_values = np.flip(np.unique(connection_elfs))
+    possible_values = np.flip(np.unique(connection_elfs))
     
     ###########################################################################
     # Dimensionality Setup
@@ -481,7 +616,7 @@ def find_bifurcations(
     
     # create an array representing which basins are connected to one another
     # at a given value
-    basin_connections = np.full(len(basin_maxima_grid), -1, dtype=np.int64)
+    basin_connections = np.full(num_basins, -1, dtype=np.int64)
     # and an array pointing each basin group to its corresponding list index
     # at a given value
     feature_group_indices = basin_connections.copy()
@@ -502,13 +637,13 @@ def find_bifurcations(
     # Begin loop
     ###########################################################################
     # loop over elf values from high to low
-    previous_elf_value = 1.0e12 # make unreasonably large
-    for val_idx, elf_value in enumerate(possible_elf_values):
+    previous_value = 1.0e12 # make unreasonably large
+    for val_idx, value in enumerate(possible_values):
         #######################################################################
         # Find groups of connected basins
         #######################################################################
         # get the new connections that exist at this value
-        connection_indices = np.where((connection_elfs>=elf_value) & (connection_elfs < previous_elf_value))
+        connection_indices = np.where((connection_elfs>=value) & (connection_elfs < previous_value))
         current_connections = connection_pairs[connection_indices]
         # reset our connections and groups.
         # NOTE: connections don't need to be reset as they will never disappear
@@ -605,7 +740,7 @@ def find_bifurcations(
         new_dimensionalities = []
 
         previous_solid = new_solid
-        new_solid = data >= elf_value
+        new_solid = data >= value
         # calculate new dimensionalities
         root_mask, parent, offset_x, offset_y, offset_z, roots, cycles, dims = get_connected_features(
             solid=new_solid,
@@ -647,13 +782,19 @@ def find_bifurcations(
         
         # if a new feature appeared, we append the current groups
         if not same_groups:
-            bifurcation_values.append(elf_value)
+            bifurcation_values.append(value)
             bifurcation_features.append(feature_groups)
             bifurcation_feature_indices.append(feature_ids)
             bifurcation_dimensionalities.append(new_dimensionalities)
         
         # update our previous elf value
-        previous_elf_value = elf_value
+        previous_value = value
+        
+        # if we've found a single feature containing all basins that is 3D, we
+        # can break as no further bifurcations will be found
+        if len(feature_groups) == 1:
+            if len(feature_groups[0]) == num_basins and new_dimensionalities[0] == 3:
+                break
     
     #######################################################################
     # Organize Features
@@ -688,7 +829,7 @@ def find_bifurcations(
     # NOTE: the basins at each value are the ones that exist at or below that
     # value. Therefore, the nodes that appear right above that value are those
     # in the next index of the list
-    for bif_idx, elf_value in enumerate(bifurcation_values[:-1]):
+    for bif_idx, value in enumerate(bifurcation_values[:-1]):
         # get the features that exist exactly at this value
         old_feature_indices = bifurcation_feature_indices[bif_idx]
         # old_dimensions = bifurcation_dimensionalities[bif_idx]
@@ -708,7 +849,7 @@ def find_bifurcations(
             
             # if we're still here, this is a new feature and we record its attributes
             feature_basins[feat_count] = feat_basins
-            feature_min_values[feat_count] = elf_value
+            feature_min_values[feat_count] = value
             feature_dims[feat_count] = feat_dim
             
             # find the parent of this feature. We need to iterate backwards over
@@ -725,7 +866,7 @@ def find_bifurcations(
             feature_parents[feat_count] = parent_idx
             
             # note this parent disappears at this value
-            feature_max_values[parent_idx] = elf_value
+            feature_max_values[parent_idx] = value
             
             # if this feature is irreducible, add its max value
             if len(feat_basins) == 1:

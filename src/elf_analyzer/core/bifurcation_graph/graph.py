@@ -121,14 +121,23 @@ class BifurcationGraph:
         
         # get connections between neighboring basins
         # edge_indices = np.argwhere(bader.basin_edges)
-        connection_array = find_connections(
+        # connection_array = find_connections(
+        #     bader.basin_labels,
+        #     reference_grid.total,
+        #     # edge_indices,
+        #     bader.basin_edges,
+        #     len(bader.basin_maxima_frac),
+        #     neighbor_transforms,
+        #     )
+        lower_points, higher_points, values = find_connections(
             bader.basin_labels,
             reference_grid.total,
-            # edge_indices,
             bader.basin_edges,
             len(bader.basin_maxima_frac),
             neighbor_transforms,
             )
+        # TODO: get unique pairings/values and add connections to self
+        breakpoint()
         # also add the maximum value of each basin as the point it 'connects' to
         # itself
         basin_maxima = bader.basin_maxima_ref_values
