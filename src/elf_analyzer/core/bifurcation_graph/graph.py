@@ -120,15 +120,6 @@ class BifurcationGraph:
         t0 = time.time()
         
         # get connections between neighboring basins
-        # edge_indices = np.argwhere(bader.basin_edges)
-        # connection_array = find_connections(
-        #     bader.basin_labels,
-        #     reference_grid.total,
-        #     # edge_indices,
-        #     bader.basin_edges,
-        #     len(bader.basin_maxima_frac),
-        #     neighbor_transforms,
-        #     )
         lower_points, upper_points, connection_values = find_connections(
             bader.basin_labels,
             reference_grid.total,

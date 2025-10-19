@@ -58,13 +58,13 @@ def find_connections(
     # return connection array
     return connection_array
 
-@njit(cache=True)
+# @njit(cache=True)
 def check_covalent(
     feature_frac_coord,
     atom_frac_coords,
     atom_cart_coords,
+    atom_radii,
     frac2cart,
-    min_covalent_bond_ratio,
     min_covalent_angle,
         ):
     
@@ -101,16 +101,10 @@ def check_covalent(
     sorted_atoms = np.argsort(atom_dists)
     nearest_atom = sorted_atoms[0]
     neighbor_atom = sorted_atoms[1]
-
-    # check if the ratio is within our tolerance
-    nearest_dist = atom_dists[nearest_atom]
-    neighbor_dist = atom_dists[neighbor_atom]
-    covalent_bond_ratio = nearest_dist / neighbor_dist # always 0-1
-    if covalent_bond_ratio < min_covalent_bond_ratio:
-        return False
     
-    # Now check if the point is within a reasonable angle. First, get our points
-    # in cartesian coordinates. This is corresponds to:
+    # First we check that we are reasonably close to being along this bond. We
+    # do this by checking the angle between the neighboring atoms and our basin.
+    # This is corresponds to:
         # θ = arccos((A ⋅ B) / (|A|*|B|))
     # where A and B are the vectors from the feature to each neighboring atom
     A = atom_vecs[nearest_atom]
@@ -121,19 +115,48 @@ def check_covalent(
     cos_theta = max(-1.0, min(1.0, cos_theta))
     # get theta
     theta = np.arccos(cos_theta)
-    # check if our angle is above our tolerance
-    if theta > min_covalent_angle:
-        return True
-    else:
+    # If our angle is not above our tolerance, we return as not a covalent bond
+    if theta < min_covalent_angle:
         return False
+    else:
+        return True
+    
+    # Next we need to distinguish between covalent bonds and polarized shells/donated electrons.
+    # This is much more arbitrary as heterogenous bonds will always sit somewhere
+    # on the spectrum of covalent <-> ionic. Generally, more ionic bonds will
+    # pull the bonding electrons closer to the more electronegative atom. "closer"
+    # here is the challenge, as we also need to take into account the size of
+    # the atoms to begin with. 
+    # As a rough approximation, we calculate the ratio of the bond belonging
+    # to the nearest atom and compare to the ratio if we were to use each atoms
+    # atomic radius
 
-@njit(parallel=True, cache=True)
+    nearest_dist = atom_dists[nearest_atom]
+    neighbor_dist = atom_dists[neighbor_atom]
+    
+    feature_ratio = nearest_dist / (nearest_dist + neighbor_dist)
+    
+    # get the atomic radii of each
+    nearest_radius = atom_radii[nearest_atom]
+    neighbor_radius = atom_radii[neighbor_atom]
+    
+    radii_ratio = nearest_radius / (nearest_radius + neighbor_radius)
+    
+    # Now we want a measure of ionic/covalent character. Imagine 
+    
+    breakpoint()
+    
+    # Now check if the point is within a reasonable angle. First, get our points
+    # in cartesian coordinates. 
+
+
+# @njit(parallel=True, cache=True)
 def check_all_covalent(
     feature_frac_coords,
     atom_frac_coords,
     atom_cart_coords,
+    atom_radii,
     frac2cart,
-    min_covalent_bond_ratio,
     min_covalent_angle,
         ):
     # create an array to store if each feature is covalent
@@ -144,8 +167,8 @@ def check_all_covalent(
             feature_frac_coord,
             atom_frac_coords,
             atom_cart_coords,
+            atom_radii,
             frac2cart,
-            min_covalent_bond_ratio,
             min_covalent_angle,
             )
     return covalent_features

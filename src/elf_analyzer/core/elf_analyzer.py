@@ -169,11 +169,16 @@ class ElfAnalyzer(Bader):
         self._initialize_bifurcation_graph()
         
         # Now we have a graph with information associated with each basin. We want
-        # to label each node.
+        # to label each node. First, we label cores as they are the simplest
         self._mark_cores()
+        
         plot = self.bifurcation_graph.get_plot()
         plot.write_html("test1.html")
         breakpoint()
+        
+        # Next we label covalent bonds. This step has the most ambiguity as there
+        # is no obvious cutoff between an ionic and covalent bond.
+        self._mark_covalent()
         
         # Now we want to label our valence features as Covalent, Metallic, or bare electron.
         # Many covalent and metallic features are easy to find. Covalent bonds
@@ -402,6 +407,44 @@ class ElfAnalyzer(Bader):
                     child.basin_subtype = basin_subtype
 
         return graph
+    
+    def _mark_covalent(self):
+        """
+        Takes in a bifurcation graph and labels valence features that
+        are obviously metallic or covalent
+        """
+        logging.info("Marking covalent features")
+        graph = self.bifurcation_graph
+        
+        # get frac coords of unassigned nodes
+        valence_frac = []
+        for node in graph.unassigned_irreducible_nodes:
+            valence_frac.append(node.frac_coords)
+        
+        # Convert our cutoff angle to radians
+        min_covalent_angle = self.min_covalent_angle * math.pi / 180
+        
+        # get our atom frac coords and atomic radii
+        atom_frac_coords = self.structure.frac_coords
+        atom_cart_coords = self.structure.cart_coords
+        atom_radii = [i.specie.atomic_radius for i in self.structure]
+
+        # if/then is to avoid numba disliking empty lists
+        if len(valence_frac) > 0:
+            covalent_nodes = check_all_covalent(
+                valence_frac, 
+                atom_frac_coords, 
+                atom_cart_coords, 
+                atom_radii,
+                frac2cart=self.structure.lattice.matrix, 
+                min_covalent_angle=min_covalent_angle,
+                )
+        else:
+            covalent_nodes = []
+
+        for node, covalent in zip(graph.unassigned_irreducible_nodes, covalent_nodes):
+            if covalent:
+                node.feature_type = "covalent"
     
     def _mark_covalent_lonepair(self):
         """
