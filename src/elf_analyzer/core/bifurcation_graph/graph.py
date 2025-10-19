@@ -73,7 +73,7 @@ class BifurcationGraph:
     
     @property
     def unassigned_irreducible_nodes(self):
-        return [i for i in self if i.feature_type == "irreducible"]
+        return [i for i in self if i.feature_type in ("irreducible", "shallow")]
     
     def to_dict(self) -> dict:
         # NOTE: This could just be a to list method, but I may add other meta
@@ -247,11 +247,67 @@ class BifurcationGraph:
 
             node_keys.append(node.key)
                 
-        # TODO: Combine ring/spheres to singular basins. Calculate coord envs
-        # for irreducible features?
-        # Move plot method to here. Add get_plot_label methods to nodes?
+        # sometimes we get extremely shallow reducible features that seem to
+        # result from voxelation. Their depth is only one significant figure
+        # deep
+        cls._remove_shallow_reducible_nodes(graph)
+            
+        
+        # Now we check for reducible nodes that should really be considered
+        # irreducible. These nodes are very deep but their children separate
+        # at very low values
+        cls._combine_shallow_irreducible_nodes(graph)
         
         return graph
+    
+    @staticmethod
+    def _remove_shallow_reducible_nodes(graph, cutoff=0.05):
+        reducible_nodes = graph.reducible_nodes.copy()
+        reducible_nodes.reverse()
+        for node in reducible_nodes:
+            parent = node.parent
+            if parent is None:
+                continue
+            if (node.depth / node.parent.depth) < cutoff:
+                node.remove()
+    
+    @staticmethod
+    def _combine_shallow_irreducible_nodes(graph, cutoff=0.05):
+        # TODO: Add check that nodes are at relatively similar values
+        nodes_to_combine = []
+        checked_nodes = []
+        for node in graph.reducible_nodes.copy():
+            # skip infinite nodes and nodes we've already checked
+            if node.is_infinite or node.key in checked_nodes:
+                continue
+            # get this nodes depth
+            depth = node.depth
+            is_shallow = True
+            # get all children
+            for child in node.deep_children:
+                # skip other reducible nodes
+                if child.is_reducible:
+                    continue
+                # check if depth is more than the cutoff portion of the parent's depth. If so,
+                # we don't consider this feature to be shallow
+                if (child.depth / depth) > cutoff:
+                    is_shallow = False
+                    break
+            
+            if not is_shallow:
+                continue
+            
+            # note we want to combine this node
+            nodes_to_combine.append(node)
+            # if the node is shallow, we will combine all of its children later.
+            # for now, we note that its children have already been checked
+            for child in node.deep_children:
+                if node.is_reducible:
+                    checked_nodes.append(child.key)
+        # now we combine all of the nodes 
+        for node in nodes_to_combine:
+            node.make_irreducible()
+                
         
     def get_plot(self) -> go.Figure:
         """

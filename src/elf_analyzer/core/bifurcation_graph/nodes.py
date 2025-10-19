@@ -153,7 +153,7 @@ class NodeBase(ABC):
     
     @property
     def _bader(self):
-        return self.bifurcation_graph._bader
+        return self.bifurcation_graph.bader
     
     @property
     def basin_mask(self):
@@ -228,8 +228,11 @@ class ReducibleNode(NodeBase):
         while True:
             new_children = []
             for child in current_children:
-                new_children.extend(child.children)
                 all_children.append(child)
+                if not child.is_reducible:
+                    continue
+                new_children.extend(child.children)
+                
             current_children = new_children
             if len(current_children) == 0:
                 break
@@ -254,6 +257,56 @@ class ReducibleNode(NodeBase):
         graph = self.bifurcation_graph
         graph._nodes = [i for i in graph._nodes if i is not self]
         del(graph._node_keys[self.key])
+        
+    def make_irreducible(self):
+        # we want to combine all of the irreducible nodes in this node into one
+        # then delete all children.
+        frac_coords = None
+        charge = 0
+        volume = 0
+        nearest_atom = None
+        nearest_atom_type = None
+        atom_distance = 1e300
+        max_value = -1e300
+        for child in self.deep_children:
+            if child.is_reducible:
+                continue
+            charge += child.charge
+            volume += child.volume
+            if child.atom_distance < atom_distance:
+                atom_distance = child.atom_distance
+                frac_coords = child.frac_coords
+                nearest_atom = child.nearest_atom
+                nearest_atom_type = child.nearest_atom_type
+            if child.max_value > max_value:
+                max_value = child.max_value
+        # delete all nodes below this one
+        nodes = self.deep_children.copy()
+        nodes.reverse()
+        for node in nodes:
+            node.remove()
+        # delete self
+        self.remove()
+        
+        # create a new irreducible node connected to parent
+        node = IrreducibleNode(
+            key=self.key,
+            bifurcation_graph=self.bifurcation_graph,
+            basins=self.basins,
+            dimensionality=self.dimensionality,
+            contained_atoms=self.contained_atoms,
+            min_value=self.min_value,
+            max_value=max_value,
+            parent=self.parent,
+            frac_coords=frac_coords, 
+            charge=charge, 
+            volume=volume, 
+            nearest_atom=nearest_atom, 
+            nearest_atom_type=nearest_atom_type, 
+            atom_distance=atom_distance,
+            feature_type="shallow"
+            )
+        node.feature_type = "shallow"
         
     @property
     def plot_label(self) -> str:
