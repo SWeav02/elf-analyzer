@@ -17,7 +17,10 @@ from elf_analyzer.core.bifurcation_graph.infinite_feature_numba import (
     find_connections,
     find_bifurcations
     )
-from elf_analyzer.core.bifurcation_graph.surrounded_atoms_numba import get_features_surrounding_atoms
+from elf_analyzer.core.bifurcation_graph.surrounded_atoms_numba import (
+    get_features_surrounding_atoms,
+    find_potential_bifs
+    )
 
 class BifurcationGraph:
     """
@@ -119,14 +122,33 @@ class BifurcationGraph:
         logging.info("Locating Bifurcations")
         t0 = time.time()
         
-        # get connections between neighboring basins
-        lower_points, upper_points, connection_values = find_connections(
-            bader.basin_labels,
-            reference_grid.total,
-            bader.basin_edges,
-            len(bader.basin_maxima_frac),
-            neighbor_transforms,
+        # get mask where potential saddle points connecting features exist
+        bif_mask = find_potential_bifs(
+            data=reference_grid.total,
+            edge_mask=bader.basin_edges,
+            neighbor_transforms=neighbor_transforms,
+            greater=True
             )
+        
+        # get the basins connected at these points
+        lower_points, upper_points, connection_values = find_connections(
+            basin_labels=bader.basin_labels,
+            data=reference_grid.total,
+            bif_mask=bif_mask,
+            neighbor_transforms=neighbor_transforms,
+            )
+        # clear mask
+        bif_mask = None
+        # # get connections between neighboring basins
+        # lower_points, upper_points, connection_values = find_connections(
+        #     bader.basin_labels,
+        #     reference_grid.total,
+        #     bader.basin_edges,
+        #     len(bader.basin_maxima_frac),
+        #     neighbor_transforms,
+        #     )
+
+        breakpoint()
         # add maxima values as the points each basin "connects" to itself
         basin_maxima = bader.basin_maxima_ref_values
         basin_indices = np.arange(len(basin_maxima))
@@ -176,7 +198,17 @@ class BifurcationGraph:
         # Get Atoms Surrounded by Each Feature
         #######################################################################
         logging.info("Finding contained atoms")    
-
+        
+        # possible saddle points where voids between features first connect
+        bif_mask = find_potential_bifs(
+            data=reference_grid.total,
+            edge_mask=bader.basin_edges,
+            neighbor_transforms=neighbor_transforms,
+            greater=True
+            )
+        
+        breakpoint()
+        
         # get atom grid coordinates
         atom_grid_coords = reference_grid.frac_to_grid(bader.structure.frac_coords)
         atom_grid_coords = np.round(atom_grid_coords).astype(np.int64) % reference_grid.shape
@@ -268,6 +300,11 @@ class BifurcationGraph:
             parent = node.parent
             if parent is None:
                 continue
+            # The parent must only differ in dimensionality
+            if not np.all(np.isin(parent.basins, node.basins)):
+                continue
+            # if the node is exceedingly shallow, it probably is caused
+            # by voxelation
             if (node.depth / node.parent.depth) < cutoff:
                 node.remove()
     
