@@ -6,6 +6,212 @@ from numba import njit, prange
 
 from baderkit.core.methods.shared_numba import wrap_point
 
+@njit(cache=True, inline="always")
+def union_w_roots(parents, x, y, root_mask):        
+    rx = find_root(parents, x)
+    ry = find_root(parents, y)
+
+    parents[rx] = ry
+    
+    if root_mask[rx]:
+        root_mask[rx] = False
+    if not root_mask[ry]:
+        root_mask[ry] = True
+
+@njit(cache=True)
+def trans_to_idx(i, j, k, size):
+    val_range = size*2+1
+    return (i+size)*(val_range**2) + (j+size)*val_range + (k+size)
+
+@njit(cache=True, inline="always")
+def get_box_connections(size):
+    shifts = []
+    lower_connection = []
+    upper_connection = []
+    for i in range(-size, size+1):
+        for j in range(-size, size+1):
+            for k in range(-size, size+1):
+                shifts.append((i,j,k))
+                idx = trans_to_idx(i,j,k,size)
+                for ni in range(-1, 2):
+                    for nj in range(-1, 2):
+                        for nk in range(-1, 2):
+                            # skip center
+                            if ni ==0 and nj ==0 and nk==0:
+                                continue
+                            # get shifted point
+                            si = i+ni
+                            sj = j+nj
+                            sk = k+nk
+                            # skip values outside range
+                            if abs(si) > size or abs(sj) > size or abs(sk) > size:
+                                continue
+                            # get index
+                            neigh_idx = trans_to_idx(si, sj, sk, size)
+                            # skip previous indices to avoid repeat connections
+                            if neigh_idx < idx:
+                                continue
+                            lower_connection.append(idx)
+                            upper_connection.append(neigh_idx)
+    
+    lower_connection = np.array(lower_connection, dtype=np.uint16)
+    upper_connection = np.array(upper_connection, dtype=np.uint16)
+    connections = np.column_stack((lower_connection, upper_connection))
+    return np.array(shifts, dtype=np.int8), connections
+
+@njit(cache=True, inline="always")
+def check_possible_bifurcation(
+    i,j,k,
+    value,
+    data,
+    shifts,
+    shift_connections,
+    greater,
+        ):
+    # check if there are at least 2 groups in the immediate neighborhood if we
+    # were to allow values including the central one
+    nx, ny, nz = data.shape
+    
+    # create trackers for neighbors
+    value_mask = np.zeros(27, dtype=np.bool_)
+    connections = np.arange(27, dtype=np.uint8)
+    root_mask = np.zeros(27, dtype=np.bool_)
+
+    # mark mask
+    for shift_idx, (si, sj, sk) in enumerate(shifts):
+        # skip center so that it is never in mask
+        if shift_idx == 13:
+            continue
+        ni, nj, nk = wrap_point(i+si, j+sj, k+sk, nx, ny, nz)
+        neigh_value = data[ni,nj,nk]
+        if (greater and neigh_value >= value) or (not greater and neigh_value <= value):
+            # mark in mask and instantiate as a root
+            value_mask[shift_idx] = True
+            root_mask[shift_idx] = True
+    
+    # iterate over connections and make unions
+    for connection_idx, (shift1, shift2) in enumerate(shift_connections):
+        # skip if one is not in mask
+        if not value_mask[shift1] or not value_mask[shift2]:
+            continue
+        # mark union and reduce roots
+        union_w_roots(connections, shift1, shift2, root_mask)
+
+    # if there is more than one root, this could be a bifurcation
+    maybe_bif = np.count_nonzero(root_mask) > 1
+    
+    return maybe_bif
+
+@njit(cache=True, inline="always")
+def check_bifurcation(
+    i,j,k,
+    value,
+    data,
+    shifts,
+    shift_connections,
+    greater,
+        ):
+    nx, ny, nz = data.shape
+    
+    # create trackers for neighbors
+    value_mask = np.zeros(125, dtype=np.uint8)
+    connections = np.arange(125, dtype=np.uint8)
+    root_mask = np.zeros(125, dtype=np.bool_)
+
+    # mark mask
+    for shift_idx, (si, sj, sk) in enumerate(shifts):
+        ni, nj, nk = wrap_point(i+si, j+sj, k+sk, nx, ny, nz)
+        neigh_value = data[ni,nj,nk]
+        if (greater and neigh_value > value) or (not greater and neigh_value < value):
+            value_mask[shift_idx] = 2
+            root_mask[shift_idx] = True
+            
+        elif neigh_value == value:
+            value_mask[shift_idx] = 1
+    
+    include_indices = []
+    # iterate over connections and make unions
+    for connection_idx, (shift1, shift2) in enumerate(shift_connections):
+        connection_type = min(value_mask[shift1], value_mask[shift2])
+        if connection_type == 0:
+            continue
+        elif connection_type == 2:
+            union_w_roots(connections, shift1, shift2, root_mask)
+        elif connection_type == 1:
+            include_indices.append(connection_idx)
+    
+    n_exclude_groups = np.count_nonzero(root_mask)
+    
+    # make unions for exact vals
+    for connection_idx in include_indices:
+        shift1, shift2 = shift_connections[connection_idx]
+        union_w_roots(connections, shift1, shift2, root_mask)
+    n_include_groups = np.count_nonzero(root_mask)
+    
+    
+    is_bif = n_exclude_groups != n_include_groups
+    
+    return is_bif
+
+@njit(parallel=True, cache=True)
+def find_potential_bifs(
+    data,
+    edge_mask,
+    greater=False
+        ):
+    nx, ny, nz = data.shape
+        
+    bif_mask = np.zeros_like(data, dtype=np.bool_)
+    
+    # We want to find bifurcations that make holes in our features. Imagine creating
+    # an isosurface and constructing solids from the values above and below it.
+    # A hole occurs in a solid where two parts of the reverse solid connect
+    # for the first time.
+    
+    # For speed, we map out possible connections for each neighbor. We get
+    # neighbor connections for first and second neighbors (3x3x3, 5x5x5)
+    trans3, trans_connections3 = get_box_connections(1)
+    trans5, trans_connections5 = get_box_connections(2)
+
+    # loop over each edge point and find bifurcation voxels
+    for i in prange(nx):
+        for j in range(ny):
+            for k in range(nz):
+                
+                # skip anything not on the edge
+                if not edge_mask[i,j,k]:
+                    continue
+                
+                value = data[i,j,k]
+                
+                # do a first check with the nearest neighbors to see if this
+                # has the potential to be a bifurcation
+                if not check_possible_bifurcation(
+                    i, j, k, 
+                    value,
+                    data, 
+                    trans3, 
+                    trans_connections3,
+                    greater
+                    ):
+                    continue
+
+                # check if point is a potential bifurcation
+                is_bif = check_bifurcation(
+                    i, j, k, 
+                    value,
+                    data, 
+                    trans5, 
+                    trans_connections5,
+                    greater
+                    )
+
+                if is_bif:
+                    bif_mask[i,j,k] = True
+                
+                
+    return bif_mask
+
 @njit(cache=True)
 def find_connections(
         basin_labels: NDArray[np.int64],
@@ -54,7 +260,7 @@ def find_connections(
                 # get unique labels
                 unique_neigh_labels = []
                 for neigh_label in neigh_labels:
-                    if not label in unique_neigh_labels:
+                    if not neigh_label in unique_neigh_labels:
                         unique_neigh_labels.append(neigh_label)
                 # get highest point for each connected basin
                 for unique_label in unique_neigh_labels:
@@ -66,163 +272,11 @@ def find_connections(
                             # cap at this points value if the neighbor is higher
                             best_val = neigh_val
                     # add connection
-                    lower_points.append(min(neigh_label, label))
-                    upper_points.append(max(neigh_label, label))
+                    lower_points.append(min(unique_label, label))
+                    upper_points.append(max(unique_label, label))
                     conn_values.append(best_val)
                     
     return np.array(lower_points, dtype=np.int64), np.array(upper_points, dtype=np.int64), np.array(conn_values, dtype=np.float64)
-
-
-# @njit(cache=True, parallel=True)
-# def find_connections(
-#         basin_labels: NDArray[np.int64],
-#         data: NDArray[np.float64],
-#         edge_mask,
-#         basin_num: np.int64,
-#         neighbor_transforms: NDArray[np.int64],
-#         ):
-#     """
-#     Finds the values at which basins connect to on another locally. This occurs
-#     if two adjacent points are maxima along the edge of separate basins.
-#     """
-#     nx, ny, nz = basin_labels.shape
-
-#     # create arrays to track connection values
-#     conn_values = np.empty_like(data, dtype=np.float64)
-#     conn_neighs = np.empty_like(data, dtype=np.uint16)
-    
-#     # loop over edges and calculate their potential bifurcation values
-#     for i in prange(nx):
-#         for j in range(ny):
-#             for k in range(nz):
-#                 # skip points that aren't on the edge
-#                 if not edge_mask[i,j,k]:
-#                     continue
-                
-#                 # get this points elf value and basin label
-#                 label = basin_labels[i,j,k]
-#                 if label == -1:
-#                     # shouldn't happen if bader is working properly
-#                     continue
-                
-#                 value = data[i,j,k]
-                
-#                 # we want to find the highest value that connects this point
-#                 # to one of its neighbors (in another basin). This is the first
-#                 # value at which a new connection would occur due to this point.
-#                 # We also want to find the other point partaking in this connection.
-#                 # if there are multiple possibilities, we want the one with the
-#                 # lowest value.
-#                 best_lower_conn_val = -1e12 # extremely low value
-#                 best_upper_conn_val = 1e12
-#                 conn_neigh = -1
-#                 # loop over neighbors
-#                 for si, sj, sk in neighbor_transforms:
-#                     # wrap points
-#                     ii, jj, kk = wrap_point(i + si, j + sj, k + sk, nx, ny, nz)
-#                     # skip non-edges
-#                     if not edge_mask[ii,jj,kk]:
-#                         continue
-                    
-#                     neigh_label = basin_labels[ii,jj,kk]
-#                     # skip points in the same basin
-#                     if neigh_label == label or neigh_label == -1:
-#                         continue
-                    
-#                     neigh_value = data[ii,jj,kk]
-                    
-#                     # get the value at which the points would connect if scanning
-#                     # up the ELF
-#                     lower_conn_value = min(value, neigh_value)
-                    
-#                     # skip if this is lower than the current best
-#                     if lower_conn_value < best_lower_conn_val:
-#                         continue
-                    
-#                     upper_conn_value = max(value, neigh_value)
-#                     # if this connection is better than previous ones, update
-#                     if lower_conn_value > best_lower_conn_val:
-#                         best_lower_conn_val = lower_conn_value
-#                         best_upper_conn_val = upper_conn_value
-#                         conn_neigh = neigh_label
-#                     elif lower_conn_value == best_lower_conn_val and upper_conn_value < best_upper_conn_val:
-#                         best_upper_conn_val = upper_conn_value
-#                         conn_neigh = neigh_label
-
-#                 # note the highest connected basin still below this point
-#                 conn_values[i,j,k] = best_lower_conn_val
-#                 conn_neighs[i,j,k] = conn_neigh
-    
-#     # Now we have a record of the highest point at which each point connects to
-#     # another basin. A point is a bifurcation if none of the adjacent neighbors in the
-#     # same basin connect to the same neighboring basin at a higher value and if
-#     # none of the adjacent neighbors in the neighboring basin have a higher value
-#     lower_points = []
-#     upper_points = []
-#     values = []
-    
-#     # TODO: This could actually be done in parallel and then the results collected
-#     # into lists in an additional loop. I'm just not sure how much faster that
-#     # would be and it would increase memory usage
-    
-#     # loop over each edge voxel
-#     for i in range(nx):
-#         for j in range(ny):
-#             for k in range(nz):
-#                 # skip points that aren't on the edge
-#                 if not edge_mask[i,j,k]:
-#                     continue
-                
-#                 label = basin_labels[i,j,k]
-#                 if label == -1:
-#                     # shouldn't happen if bader is working properly
-#                     continue
-                
-#                 # get the label of the connected basin and the value they connect at
-#                 conn_neigh = conn_neighs[i,j,k]
-#                 conn_value = conn_values[i,j,k]
-                
-#                 is_bif = True
-#                 # loop over neighbors
-#                 for si, sj, sk in neighbor_transforms:
-#                     # wrap points
-#                     ii, jj, kk = wrap_point(i + si, j + sj, k + sk, nx, ny, nz)
-#                     # skip non-edges
-#                     if not edge_mask[ii,jj,kk]:
-#                         continue
-                    
-#                     neigh_label = basin_labels[ii, jj, kk]
-#                     # skip neighbors without labels
-#                     if neigh_label == -1:
-#                         continue
-                    
-#                     # skip neighs with lower connection values
-#                     neigh_conn_value = conn_values[ii,jj,kk]
-#                     if neigh_conn_value <= conn_value:
-#                         continue
-                    
-#                     # get this neighbors connected basin
-#                     neigh_conn_neigh = conn_neighs[ii,jj,kk]
-                    
-#                     # if the neighbor has the same basin connection pair, this
-#                     # is not a bifurcation
-#                     if (
-#                         (neigh_label == label and neigh_conn_neigh == conn_neigh)
-#                     or (neigh_label == conn_neigh and neigh_conn_neigh == label)
-#                     ):
-#                         is_bif = False
-#                         break
-
-#                 # if this is a bifurcation, add it to our list
-#                 if is_bif:
-#                     lower_label = min(label, conn_neigh)
-#                     upper_label = max(label, conn_neigh)
-#                     lower_points.append(lower_label)
-#                     upper_points.append(upper_label)
-#                     values.append(conn_value)
-                    
-#     return np.array(lower_points, dtype=np.int64), np.array(upper_points, dtype=np.int64), np.array(values, dtype=np.float64)
-
 
 @njit(cache=True)
 def find_root(parent, x):

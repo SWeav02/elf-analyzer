@@ -15,11 +15,11 @@ from elf_analyzer.core.bifurcation_graph.plot_colors import NODE_COLORS, LINE_CO
 # from elf_analyzer.core.utilities import IonicRadiiTools
 from elf_analyzer.core.bifurcation_graph.infinite_feature_numba import (
     find_connections,
-    find_bifurcations
+    find_bifurcations,
+    find_potential_bifs
     )
 from elf_analyzer.core.bifurcation_graph.surrounded_atoms_numba import (
     get_features_surrounding_atoms,
-    find_potential_bifs
     )
 
 class BifurcationGraph:
@@ -126,7 +126,6 @@ class BifurcationGraph:
         bif_mask = find_potential_bifs(
             data=reference_grid.total,
             edge_mask=bader.basin_edges,
-            neighbor_transforms=neighbor_transforms,
             greater=True
             )
         
@@ -139,7 +138,8 @@ class BifurcationGraph:
             )
         # clear mask
         bif_mask = None
-        # # get connections between neighboring basins
+        
+        # get connections between neighboring basins
         # lower_points, upper_points, connection_values = find_connections(
         #     bader.basin_labels,
         #     reference_grid.total,
@@ -148,7 +148,7 @@ class BifurcationGraph:
         #     neighbor_transforms,
         #     )
 
-        breakpoint()
+        # breakpoint()
         # add maxima values as the points each basin "connects" to itself
         basin_maxima = bader.basin_maxima_ref_values
         basin_indices = np.arange(len(basin_maxima))
@@ -200,14 +200,14 @@ class BifurcationGraph:
         logging.info("Finding contained atoms")    
         
         # possible saddle points where voids between features first connect
-        bif_mask = find_potential_bifs(
-            data=reference_grid.total,
-            edge_mask=bader.basin_edges,
-            neighbor_transforms=neighbor_transforms,
-            greater=True
-            )
+        # bif_mask = find_potential_bifs(
+        #     data=reference_grid.total,
+        #     edge_mask=bader.basin_edges,
+        #     neighbor_transforms=neighbor_transforms,
+        #     greater=False
+        #     )
         
-        breakpoint()
+        # breakpoint()
         
         # get atom grid coordinates
         atom_grid_coords = reference_grid.frac_to_grid(bader.structure.frac_coords)
@@ -282,13 +282,13 @@ class BifurcationGraph:
         # sometimes we get extremely shallow reducible features that seem to
         # result from voxelation. Their depth is only one significant figure
         # deep
-        cls._remove_shallow_reducible_nodes(graph)
+        # cls._remove_shallow_reducible_nodes(graph)
             
         
         # Now we check for reducible nodes that should really be considered
         # irreducible. These nodes are very deep but their children separate
         # at very low values
-        cls._combine_shallow_irreducible_nodes(graph)
+        # cls._combine_shallow_irreducible_nodes(graph)
         
         return graph
     
