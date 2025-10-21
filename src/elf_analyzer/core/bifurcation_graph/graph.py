@@ -8,10 +8,10 @@ import itertools
 import numpy as np
 import plotly.graph_objects as go
 
-from baderkit.core import Bader #, Structure
+from baderkit.core import Bader, Structure
 
 from elf_analyzer.core.bifurcation_graph.nodes import IrreducibleNode, ReducibleNode, NodeBase
-from elf_analyzer.core.bifurcation_graph.plot_colors import NODE_COLORS, LINE_COLOR
+from elf_analyzer.core.bifurcation_graph.feature_mappings import LINE_COLOR, FeatureSubtype
 # from elf_analyzer.core.utilities import IonicRadiiTools
 from elf_analyzer.core.bifurcation_graph.infinite_feature_numba import (
     find_connections,
@@ -21,6 +21,7 @@ from elf_analyzer.core.bifurcation_graph.infinite_feature_numba import (
 from elf_analyzer.core.bifurcation_graph.surrounded_atoms_numba import (
     get_features_surrounding_atoms,
     )
+from elf_analyzer.core.utilities.numba_functions import get_min_avg_feat_surface_dists, get_feature_edges
 
 class BifurcationGraph:
     """
@@ -28,17 +29,31 @@ class BifurcationGraph:
     contain the information on their connectivity.
     """
     
-    def __init__(self, bader: Bader = None, labeler = "ElfAnalyzer"):
+    def __init__(
+            self, 
+            structure: Structure, 
+            labeler: Bader = None, 
+            labeler_type = None,
+            atomic_radii = None,
+            ):
         self._root_nodes = []
         self._nodes = []
         self._node_keys = {}
         
-        # optional bader parameter
-        self.bader = bader
+        self.structure = structure
+        
+        # optional labeler parameter
+        self.labeler = labeler
         
         # optional labeler parameter for tracking what method was used to label
         # features
-        self.labeler = labeler
+        if labeler is None:
+            self.labeler_type = labeler_type
+        else:
+            self.labeler_type = labeler.__class__.__name__
+        
+        # optional radii parameter that must be set
+        self._atomic_radii = None
 
     def __iter__(self):
         return iter(self.nodes)
@@ -78,12 +93,28 @@ class BifurcationGraph:
     def unassigned_nodes(self):
         return [i for i in self if i.feature_subtype is None or i.feature_subtype == "shallow"]
     
+    @property
+    def atomic_radii(self):
+        if self._atomic_radii is None:
+            if self.labeler is not None:
+                self._atomic_radii = self.labeler.atomic_radii
+        return self._atomic_radii
+    
+    def nodes_by_type(self, feature_subtype: str):
+        return [i for i in self if i.feature_subtype == feature_subtype]
+    
+    def nodes_by_types(self, feature_subtypes: list[str]):
+        return [i for i in self if i.feature_subtype in feature_subtypes]
+    
     def to_dict(self) -> dict:
-        # NOTE: This could just be a to list method, but I may add other meta
-        # data down the line
-        # create our initial dict
+        radii = self.atomic_radii
+        if radii is not None:
+            radii = [float(i) for i in radii]
         graph_dict =  {
             "nodes": [i.to_dict() for i in self],
+            "structure": self.structure.to_json(),
+            "labeler_type": self.labeler_type,
+            "atomic_radii": radii,
             }
 
         return graph_dict
@@ -91,9 +122,14 @@ class BifurcationGraph:
     @classmethod
     def from_dict(cls, graph_dict: dict):
         nodes = graph_dict["nodes"]
+        structure = Structure.from_str(graph_dict["structure"], fmt="json")
+        labeler_type = graph_dict["labeler_type"]
+        atomic_radii = graph_dict["atomic_radii"]
+        if atomic_radii is not None:
+            atomic_radii = np.array(atomic_radii, dtype=np.float64)
         
         # create our initial graph object
-        graph = cls()
+        graph = cls(structure=structure, labeler_type=labeler_type, atomic_radii=atomic_radii)
         
         # add nodes
         for node_dict in nodes:
@@ -110,8 +146,8 @@ class BifurcationGraph:
         return cls.from_dict(graph_dict)
     
     @classmethod
-    def from_bader(cls, bader: Bader, **kwargs):
-        reference_grid = bader.reference_grid
+    def from_labeler(cls, labeler: Bader):
+        reference_grid = labeler.reference_grid
         neighbor_transforms, _ = reference_grid.point_neighbor_transforms
         
         
@@ -125,13 +161,13 @@ class BifurcationGraph:
         # get mask where potential saddle points connecting features exist
         bif_mask = find_potential_bifs(
             data=reference_grid.total,
-            edge_mask=bader.basin_edges,
+            edge_mask=labeler.basin_edges,
             greater=True
             )
         
         # get the basins connected at these points
         lower_points, upper_points, connection_values = find_connections(
-            basin_labels=bader.basin_labels,
+            basin_labels=labeler.basin_labels,
             data=reference_grid.total,
             bif_mask=bif_mask,
             neighbor_transforms=neighbor_transforms,
@@ -141,7 +177,7 @@ class BifurcationGraph:
         bif_mask = None
 
         # add maxima values as the points each basin "connects" to itself
-        basin_maxima = bader.basin_maxima_ref_values
+        basin_maxima = labeler.basin_maxima_ref_values
         basin_indices = np.arange(len(basin_maxima))
         lower_points = np.append(lower_points, basin_indices)
         upper_points = np.append(upper_points, basin_indices)
@@ -160,10 +196,10 @@ class BifurcationGraph:
         connection_values = connection_values[unique_indices]
         
         # breakpoint()
-        basin_maxima_grid = np.round(bader.reference_grid.frac_to_grid(bader.basin_maxima_frac)).astype(np.int64)
-        basin_maxima_grid %= bader.reference_grid.shape
+        basin_maxima_grid = np.round(labeler.reference_grid.frac_to_grid(labeler.basin_maxima_frac)).astype(np.int64)
+        basin_maxima_grid %= labeler.reference_grid.shape
         
-        basin_maxima_ref_values=bader.basin_maxima_ref_values
+        basin_maxima_ref_values=labeler.basin_maxima_ref_values
         
         (
             feature_basins,
@@ -193,7 +229,7 @@ class BifurcationGraph:
         # possible saddle points where voids between features first connect
         bif_mask = find_potential_bifs(
             data=reference_grid.total,
-            edge_mask=bader.basin_edges,
+            edge_mask=labeler.basin_edges,
             greater=False
             )
         # get the possible values and clear mask
@@ -205,7 +241,7 @@ class BifurcationGraph:
         bif_values = np.unique(np.append(bif_values, feature_min_values))
         
         # get atom grid coordinates
-        atom_grid_coords = reference_grid.frac_to_grid(bader.structure.frac_coords)
+        atom_grid_coords = reference_grid.frac_to_grid(labeler.structure.frac_coords)
         atom_grid_coords = np.round(atom_grid_coords).astype(np.int64) % reference_grid.shape
 
         # get the atoms each feature contains
@@ -225,9 +261,9 @@ class BifurcationGraph:
                 feature_parents=feature_parents,
                 atom_grid_coords=atom_grid_coords,
                 neighbor_transforms=neighbor_transforms,
-                basin_labels=bader.basin_labels,
+                basin_labels=labeler.basin_labels,
                 data=reference_grid.total,
-                num_basins=len(bader.basin_maxima_frac),
+                num_basins=len(labeler.basin_maxima_frac),
                 )
         t2 = time.time()
         logging.info(f"Time: {round(t2-t1, 2)}")
@@ -235,7 +271,7 @@ class BifurcationGraph:
         #######################################################################
         # Construct Graph
         #######################################################################    
-        graph = cls(bader=bader, **kwargs)
+        graph = cls(structure=labeler.structure, labeler=labeler)
         node_keys = []
         for feat_idx in range(len(feature_basins)):
             if feature_parents[feat_idx] == -1:
@@ -258,13 +294,11 @@ class BifurcationGraph:
             else:
                 # this is an irreducible feature. Get additional information
                 basin_idx = feature_basins[feat_idx][0]
-                frac_coords = bader.basin_maxima_frac[basin_idx]
-                charge = bader.basin_charges[basin_idx]
-                volume = bader.basin_volumes[basin_idx]
-                atom_distance = bader.basin_atom_dists[basin_idx]
-                nearest_atom = bader.basin_atoms[basin_idx]
-                nearest_atom_type = bader.structure[nearest_atom].specie.symbol
-                
+                frac_coords = labeler.basin_maxima_frac[basin_idx]
+                charge = labeler.basin_charges[basin_idx]
+                volume = labeler.basin_volumes[basin_idx]
+                nearest_atom = labeler.basin_atoms[basin_idx]
+
                 node = IrreducibleNode(
                     bifurcation_graph=graph,
                     basins=feature_basins[feat_idx], 
@@ -273,11 +307,9 @@ class BifurcationGraph:
                     min_value=feature_min_values[feat_idx], 
                     max_value=feature_max_values[feat_idx],
                     nearest_atom=nearest_atom,
-                    nearest_atom_type=nearest_atom_type,
                     frac_coords=frac_coords,
                     charge=charge,
                     volume=volume,
-                    atom_distance=atom_distance,
                     parent=parent,
                     )
 
@@ -294,9 +326,9 @@ class BifurcationGraph:
                 node.feature_subtype = "reducible"
             # check for dimension change
             elif parent.dimensionality != node.dimensionality:
-                node.feature_subtype = "dim_change"
+                node.feature_subtype = "dimension reduction"
             elif len(parent.contained_atoms) != len(node.contained_atoms):
-                node.feature_subtype = "atom_change"
+                node.feature_subtype = "contained atom reduction"
         
         # sometimes we get extremely shallow reducible features that seem to
         # result from voxelation. Their depth is only one significant figure
@@ -365,6 +397,46 @@ class BifurcationGraph:
         for node in nodes_to_combine:
             node.make_irreducible()
                 
+    def _calculate_feature_surface_dists(self):
+        # Calculate the minimum and average distance from each irreducible features
+        # fractional coordinate to its edges. This may be different from the
+        # original basins because we may have merged some of them
+        if self.labeler is None:
+            logging.warning("Surface distances can only be calculated when a graph is created using a labeler (e.g. ElfAnalyzer)")
+            return
+        
+        labeler = self.labeler
+        nodes = self.irreducible_nodes
+        
+        # collect frac coords and map basin labels to features
+        frac_coords = [i.frac_coords for i in nodes]
+        feature_map = np.empty(len(labeler.basin_maxima_frac), dtype=np.uint32)
+        for node_idx, node in enumerate(nodes):
+            feature_map[node.basins] = node_idx
+        
+        # get feature edges
+        neighbor_transforms, _ = labeler.reference_grid.point_neighbor_transforms
+        edge_mask = get_feature_edges(
+            labeled_array=labeler.basin_labels,
+            feature_map=feature_map,
+            neighbor_transforms = neighbor_transforms,
+            vacuum_mask=labeler.vacuum_mask,
+            )
+        
+        # calculate the minimum and average distance to each features surface
+        min_dists, avg_dists = get_min_avg_feat_surface_dists(
+            labels=labeler.basin_labels,
+            feature_map=feature_map,
+            frac_coords=np.array(frac_coords, dtype=np.float64),
+            edge_mask=edge_mask,
+            matrix=labeler.reference_grid.matrix,
+            max_value=np.max(self.structure.lattice.abc) * 2,
+            )
+        
+        # set surface distances
+        for node, min_dist, avg_dist in zip(nodes, min_dists, avg_dists):
+            node.min_surface_dist = min_dist
+            node.avg_surface_dist = avg_dist
         
     def get_plot(self) -> go.Figure:
         """
@@ -475,8 +547,6 @@ class BifurcationGraph:
         already_added_types = set()
 
         for idx, (feature_type, feature_subtype, label) in enumerate(zip(types, subtypes, labels)):
-            # get color
-            color = NODE_COLORS.get(feature_subtype)
             
             # only add to legend if this type hasn't been found previously
             showlegend = feature_type not in already_added_types
@@ -493,7 +563,7 @@ class BifurcationGraph:
                         marker=dict(
                             symbol="circle-dot",
                             size=18,
-                            color=color,
+                            color=feature_subtype.plot_color,
                             line=dict(color="grey", width=1),
                         ),
                         text=label,
@@ -512,7 +582,7 @@ class BifurcationGraph:
                         x=[x0, x1, x1, x0, x0],
                         y=[y0, y0, y1, y1, y0],
                         fill="toself",
-                        fillcolor=color,
+                        fillcolor=feature_subtype.plot_color,
                         line=dict(color=LINE_COLOR),
                         hoverinfo="text",
                         text=label,
@@ -531,7 +601,7 @@ class BifurcationGraph:
         # remove y axis label and add title
         fig.update_layout(
             margin=dict(l=0, r=0, t=0, b=0),
-            xaxis=dict(range=[min_x-buffer, max_x+buffer], title=f"{self.labeler} Bifurcations"),
+            xaxis=dict(range=[min_x-buffer, max_x+buffer], title=f"{self.labeler_type} Bifurcations"),
             yaxis=dict(
                 showline=False,
                 zeroline=False,

@@ -1,14 +1,13 @@
 # -*- coding: utf-8 -*-
 
-from abc import ABC, abstractproperty, abstractmethod
+from abc import ABC, abstractmethod
 from typing import Literal, TypeVar, Dict, Type
-from functools import cached_property
 
 import numpy as np
 from numpy.typing import NDArray
-import json
+from pymatgen.analysis.local_env import CrystalNN
 
-from baderkit.core import Bader
+from elf_analyzer.core.bifurcation_graph.feature_mappings import FeatureSubtype
 
 Node = TypeVar("Node", bound="NodeBase")    
 
@@ -17,6 +16,16 @@ class NodeBase(ABC):
     _registry: Dict[str, Type["NodeBase"]] = {}
     feature_type = None
     is_reducible = False
+    
+    label_map = {
+        "type" : "feature_subtype",
+        "basins" : "basins",
+        "dimensionality" : "dimensionality",
+        "contained atoms" : "contained_atoms",
+        "min value" : "min_value",
+        "max value" : "max_value",
+        "depth" : "depth",
+        }
     
     def __init__(
             self, 
@@ -38,7 +47,7 @@ class NodeBase(ABC):
         self.contained_atoms = np.array(contained_atoms)
         self.min_value = float(min_value)
         self.max_value = float(max_value)
-        self.feature_subtype = feature_subtype
+        self._feature_subtype = feature_subtype
         
 
         # convert integer parents to the corresponding Node object
@@ -132,6 +141,16 @@ class NodeBase(ABC):
     ###########################################################################
     
     @property
+    def feature_subtype(self) -> FeatureSubtype:
+        return self._feature_subtype
+    
+    @feature_subtype.setter
+    def feature_subtype(self, value: FeatureSubtype | str):
+        if not value in FeatureSubtype.subtypes[self.feature_type]:
+            raise ValueError(f"Invalid feature subtype for {self.feature_type} node. Options are {[i for i in FeatureSubtype.subtypes[self.feature_type]]}")
+        self._feature_subtype = FeatureSubtype(value)
+    
+    @property
     def depth(self):
         return self.max_value - self.min_value
     
@@ -144,10 +163,8 @@ class NodeBase(ABC):
         for ancestor in self.ancestors:
             if ancestor.is_infinite:
                 break
-        try:
-            return self.max_value - ancestor.max_value
-        except:
-            breakpoint()
+        return self.max_value - ancestor.max_value
+
     
     @property
     def is_infinite(self):
@@ -155,7 +172,7 @@ class NodeBase(ABC):
     
     @property
     def _bader(self):
-        return self.bifurcation_graph.bader
+        return self.bifurcation_graph.labeler
     
     @property
     def basin_mask(self):
@@ -174,9 +191,19 @@ class NodeBase(ABC):
     ###########################################################################
     # Properties that must be set by children or require additional steps
     ###########################################################################
-    @abstractproperty
+    @property
     def plot_label(self) -> None:
-        pass
+        lines = []
+        for tag, attr in self.label_map.items():
+            value = getattr(self, attr, None)
+            if value is None:
+                continue
+            if isinstance(value, (float, np.floating)):
+                value = round(value, 4)
+            lines.append(f"{tag}: {value}".title())
+    
+        label = "<br>".join(lines)
+        return label
     
     @abstractmethod
     def remove(self) -> None:
@@ -266,7 +293,6 @@ class ReducibleNode(NodeBase):
         charge = 0
         volume = 0
         nearest_atom = None
-        nearest_atom_type = None
         atom_distance = 1e300
         max_value = -1e300
         for child in self.deep_children:
@@ -278,7 +304,6 @@ class ReducibleNode(NodeBase):
                 atom_distance = child.atom_distance
                 frac_coords = child.frac_coords
                 nearest_atom = child.nearest_atom
-                nearest_atom_type = child.nearest_atom_type
             if child.max_value > max_value:
                 max_value = child.max_value
         # delete all nodes below this one
@@ -303,33 +328,32 @@ class ReducibleNode(NodeBase):
             charge=charge, 
             volume=volume, 
             nearest_atom=nearest_atom, 
-            nearest_atom_type=nearest_atom_type, 
-            atom_distance=atom_distance,
             )
         node.feature_subtype = "shallow"
         return node
-
-        
-    @property
-    def plot_label(self) -> str:
-        lines = [
-            f"type: {self.feature_subtype}",
-            f"max value: {round(self.max_value, 4)}",
-            f"min value: {round(self.min_value, 4)}",
-            f"depth: {round(self.depth, 4)}",
-            f"contained atoms: {self.contained_atoms}",
-            f"dimensionality: {self.dimensionality}",
-        ]
-    
-        label = "<br>".join(lines)
-        return label
-
-
 
 class IrreducibleNode(NodeBase):
     
     is_reducible = False
     feature_type = "IrreducibleNode"
+    
+    label_map = NodeBase.label_map
+    label_map.update(
+        {
+        "charge" : "charge",
+        "volume" : "volume",
+        "depth to infinite feature" : "depth_to_infinite",
+        "atom distance" : "atom_distance",
+        "nearest atom index" : "nearest_atom_index",
+        "nearest atom species" : "nearest_atom_species",
+        "minimum surface dist" : "min_surface_dist",
+        "average surface dist" : "avg_surface_dist",
+        "distance beyond atom" : "dist_beyond_atom",
+        "coord number" : "coord_num",
+        "coord atom indices" : "coord_atom_indices",
+        "coord atom species" : "coord_atom_species"
+            }
+        )
     
     def __init__(
             self,
@@ -337,45 +361,86 @@ class IrreducibleNode(NodeBase):
             charge: float,
             volume: float,
             nearest_atom: int,
-            nearest_atom_type: str,
-            atom_distance: float,
+            coord_atom_indices: list[int] = None,
             **kwargs,
         ):
         super().__init__(**kwargs)
         
         self.frac_coords = np.array(frac_coords, dtype=np.float64)
-        self.nearest_atom_type = nearest_atom_type
         self.charge = float(charge)
         self.volume = float(volume)
         self.nearest_atom = int(nearest_atom)
-        self.atom_distance = float(atom_distance)
+        
+        self._min_surface_dist = None
+        self._avg_surface_dist = None
+        self._coord_atom_indices = coord_atom_indices
         
     @property
-    def plot_label(self) -> str:
-        lines = [
-            f"type: {self.feature_subtype}",
-            f"depth: {round(self.depth, 4)}",
-            f"depth to infinite feature: {round(self.depth_to_infinite, 4)}",
-            f"max value: {round(self.max_value, 4)}",
-            f"min value: {round(self.min_value, 4)}",
-            f"charge: {round(self.charge, 4)}",
-            f"volume: {round(self.volume, 4)}",
-            f"atom distance: {round(self.atom_distance, 4)}",
-            f"nearest atom index: {self.nearest_atom}",
-            f"nearest atom type: {self.nearest_atom_type}",
-        ]
+    def nearest_atom_species(self) -> str:
+        return self.bifurcation_graph.structure[self.nearest_atom].species_string
     
-        label = "<br>".join(lines)
-        return label
-
-    # TODO: Add information calculated later in the process. How should I treat
-    # these variables?
-        # if getattr(self, "bare_electron_indicator", None) is not None:
-        #     label += f'\nfeature radius: {round(self.feature_radius, 4)}'
-        #     label += f'\ndistance beyond atom: {round(self.dist_beyond_atom, 4)}'
-        #     label += f'\ncoord number: {round(self.coord_num, 4)}'
-        #     label += f'\ncoord atoms: {self.coord_atoms}'
-        #     label += f"\nBEI array: {self.bare_electron_scores.round(4)}"
+    def _calc_atom_dist(self, atom_idx):
+        structure = self.bifurcation_graph.structure
+        atom_frac_coords = structure[atom_idx].frac_coords
+        lattice = structure.lattice
+        dist, _ = lattice.get_distance_and_image(atom_frac_coords, self.frac_coords)
+        return dist
+    
+    @property
+    def atom_distance(self) -> float:
+        return self._calc_atom_dist(self.nearest_atom)
+    
+    @property
+    def dist_beyond_atom(self) -> float:
+        if self.bifurcation_graph.atomic_radii is not None:
+            radius = self.bifurcation_graph.atomic_radii[self.nearest_atom]
+            return self.atom_distance - radius
+        
+    @property
+    def min_surface_dist(self) -> float:
+        if self._min_surface_dist is None:
+            self.bifurcation_graph._calculate_feature_surface_dists()
+        return self._min_surface_dist
+    
+    @property
+    def avg_surface_dist(self) -> float:
+        if self._avg_surface_dist is None:
+            self.bifurcation_graph._calculate_feature_surface_dists()
+        return self._avg_surface_dist
+    
+    @property
+    def coord_num(self) -> int:
+        return len(self.coord_atom_indices)
+    
+    @property
+    def coord_atom_indices(self) -> list[int]:
+        if self._coord_atom_indices is None:
+            if self.feature_subtype in ["core", "shell", "deep shell"]:
+                self._coord_atom_indices = [self.nearest_atom]
+            else:
+                # TODO: I would really like a better method of doing this as
+                # CrystalNN is very slow in this situation
+                feature_structure = self.bifurcation_graph.structure.copy()
+                feature_structure.append("H-", self.frac_coords)
+                cnn = CrystalNN(distance_cutoffs=None)
+                coordination = cnn.get_nn_info(feature_structure, -1)
+                self._coord_atom_indices = [int(i["site_index"]) for i in coordination]
+        
+        return self._coord_atom_indices
+    
+    @coord_atom_indices.setter
+    def coord_atom_indices(self, value: list[int]):
+        try:
+            value = [int(i) for i in value]
+        except:
+            raise TypeError("Atom indices must be a list of integers")
+        
+        self._coord_atom_indices = value
+    
+    @property
+    def coord_atom_species(self) -> list[str]:
+        structure = self.bifurcation_graph.structure
+        return [structure[i].species_string for i in self.coord_atom_indices]
     
     def remove(self) -> None: 
         # remove this node from the current parent's children
@@ -394,7 +459,7 @@ class IrreducibleNode(NodeBase):
             "charge",
             "volume",
             "nearest_atom",
-            "nearest_atom_type",
+            "nearest_atom_species",
             "atom_distance",
                 ]:
             node_dict[attr] = getattr(self, attr)

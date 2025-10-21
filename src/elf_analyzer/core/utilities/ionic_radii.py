@@ -21,17 +21,17 @@ class IonicRadiiTools:
             self, 
             grid: Grid,
             feature_labels: NDArray,
-            feature_structure: Structure):
+            feature_structure: Structure,
+            covalent_symbol: str = "Z",
+            ):
         
         self.grid = grid
-        self.data = grid.total
+        self.cubic_coeffs = grid.cubic_spline_coeffs
         self.feature_structure = feature_structure
         self.structure = grid.structure
         self.feature_labels = feature_labels
+        self.covalent_symbol = covalent_symbol
         
-        # create interpolator instances
-        self.grid_interpolator = Interpolator(self.data)
-        self.label_interpolator = Interpolator(feature_labels, "nearest")
         # NOTE: atom labels should correspond to labeled structure
     
     @cached_property
@@ -52,13 +52,16 @@ class IonicRadiiTools:
         neighbor_indices, neighbor_dists, neighbor_images = self.nearest_neighbors
         return get_ionic_radii(
             equivalent_atoms=self.grid.equivalent_atoms,
-            data=self.data,
+            data=self.cubic_coeffs,
             feature_labels=self.feature_labels,
             atom_frac_coords=self.structure.frac_coords,
             neighbor_indices=neighbor_indices,
             neighbor_dists=neighbor_dists,
             neighbor_images=neighbor_images,
-            covalent_labels=np.array(self.feature_structure.indices_from_symbol("Z"), dtype=np.float64)
+            covalent_labels=np.array(
+                self.feature_structure.indices_from_symbol(self.covalent_symbol), 
+                dtype=np.float64
+                )
             )
     
     

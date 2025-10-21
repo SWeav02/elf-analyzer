@@ -24,29 +24,15 @@ from pymatgen.core import Structure
 from baderkit.core import Grid, Bader
 from baderkit.core.toolkit import Format
 
-# from elf_analyzer.core.utilities import BifurcationGraph, IonicRadiiTools
+from elf_analyzer.core.utilities import IonicRadiiTools
 from elf_analyzer.core.utilities.numba_functions import check_all_covalent
 
 from elf_analyzer.core.bifurcation_graph import BifurcationGraph
+from elf_analyzer.core.bifurcation_graph.feature_mappings import FeatureSubtype
 
 Self = TypeVar("Self", bound="ElfAnalyzer")
 # TODO:
-    # - Update graph class to be more useful to specifically bifurcation plot
-    # - Make updates to selection rules:
-        # 1. Core features should have maxima within one voxel of an atom
-        # 2. Shells should have a low depth to a node containing EXACTLY 1 atom.
-        # That node should be the same for all shells, so shallow metal features
-        # that split at an earlier stage are excluded. Also check up on the shell
-        # depth correction I currently have. Maybe those really should be assigned
-        # as something else
-        # 3. Covalent/lone-pair features don't need to be in a finite molecule.
-        # e.g. they may be in a polymer. Instead, covalent bonds should be found
-        # using charge, angle, and bond ratio cutoffs. (is charge even necessary if we've already found shells?)
-        # Lone pairs are then any features at approximately the same radius as the
-        # covalent bond.
-    # - For now I shouldn't label electrides by default. Instead I'll add a
-    # convenience method for getting an electride structure. That way the Simmate
-    # workflows can still function 
+    # - Update Analyzer to include more convenience methods
     # - create method to get all radii around each atom using new radii method:
         # 1. get atom neighbors (up to distance or dynamically)
         # 2. find radii for closest and add to official neighbors
@@ -66,7 +52,7 @@ class ElfAnalyzer(Bader):
     A class for finding electride sites from an ELFCAR.
     """
     
-    _spin_polarized = False
+    _labeled_covalent = False
 
     def __init__(
         self,
@@ -75,11 +61,7 @@ class ElfAnalyzer(Bader):
         combine_shells: bool = True,
         min_covalent_charge: float = 0.6,
         min_covalent_angle: float = 135,
-        electride_elf_min: float = 0.5,
-        electride_depth_min: float = 0.2,
-        electride_charge_min: float = 0.5,
-        electride_volume_min: float = 10,
-        electride_radius_min: float = 0.3,
+        max_metal_depth: float = 0.2,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -95,28 +77,17 @@ class ElfAnalyzer(Bader):
         self.combine_shells = combine_shells
         self.min_covalent_charge = min_covalent_charge
         self.min_covalent_angle = min_covalent_angle
-        self.electride_elf_min = electride_elf_min
-        self.electride_depth_min = electride_depth_min
-        self.electride_charge_min = electride_charge_min
-        self.electride_volume_min = electride_volume_min
-        self.electride_radius_min = electride_radius_min
+        self.max_metal_depth = max_metal_depth
             
         # define properties that will be updated by running the method
         self._bifurcations = None
         self._bifurcation_graph = None
         self._bifurcation_plot = None
-        self._downscaled_reference_grid = None
-        self._downscaled_labels = None
         self._atomic_radii = None
-        
 
     ###########################################################################
     # Calculated Properties
     ###########################################################################
-    
-    @cached_property
-    def feature_structure(self) -> Structure:
-        return self.get_feature_structure()
     
     @property
     def bifurcations(self) -> dict:
@@ -133,14 +104,13 @@ class ElfAnalyzer(Bader):
     @property
     def bifurcation_plot(self) -> go.Figure:
         if self._bifurcation_plot is None:
-            self._bifurcation_plot = self._get_bifurcation_plot()
+            self._bifurcation_plot = self.bifurcation_graph.get_plot()
         return self._bifurcation_plot
     
     @property
     def atomic_radii(self) -> NDArray[np.float64]:
         if self._atomic_radii is None:
             self._get_atomic_radii()
-        # TODO: Figure out a way to calculate this on the fly with only covalent/lone-pairs assigned
         return self._atomic_radii
     
     ###########################################################################
@@ -182,66 +152,38 @@ class ElfAnalyzer(Bader):
         # from atomic shells (e.g. SnO)
         self._mark_lonepairs()
         
+        # Next we mark our metallic/bare electrons. These currently have a set
+        # of rather arbitrary cutoffs to distinguish between them. In the future
+        # I would like to perform a comprehensive study.
+        self._mark_metallic()
+        
         plot = self.bifurcation_graph.get_plot()
         plot.write_html("test1.html")
-        breakpoint()
-        
-        # TODO: Decide on whether to mark metallic vs. bare
-        # Decide how to add additional features for metallic/bare
-        # Find a better way to get nearest neighbors
-        
-        # Now we want to mark the radius of each feature. We don't use the
-        # downscaled grid here to get the best chance at a reasonable radius
-        self._mark_feature_radii()
-        
-        # Now we calculate a bare electron indicator for each valence basin. This
-        # is used just to give a sense of how bare an electron is vs. a more common
-        # metallic feature.
-        self._mark_bare_electron_indicator()
-        
-        # Finally, we want to distinguish between a metal and a bare electron.
-        # This is currently very arbitrary and based on a series of cutoffs.
-        self._mark_metallic_or_electride()
         
         # In some cases, the user may not have used a pseudopotential with enough core electrons.
         # This can result in an atom having no assigned core/shell, which will
         # result in nonsense later. We check for this here and throw an error
         assigned_atoms = []
-        for node in self.bifurcation_graph:
-            # We only want to consider basins that are core or shell, so we check
-            # here and skip otherwise
-            basin_subtype = getattr(node, "basin_subtype", None)
-
-            if not basin_subtype in ["core", "shell"]:
-                continue
-            atom = getattr(node, "nearest_atom", None)
-            if atom is not None:
-                assigned_atoms.append(atom)
+        for node in self.bifurcation_graph.nodes_by_types(["core", "shell", "deep shell"]):
+            assigned_atoms.append(node.nearest_atom)
         if (
             len(np.unique(assigned_atoms)) != len(self.structure)
             and not self.ignore_low_pseudopotentials
         ):
-            
             raise Exception(
                 "At least one atom was not assigned a zero-flux basin. This typically results"
                 "from pseudo-potentials (PPs) with only valence electrons (e.g. the defaults for Al, Si, B in VASP 5.X.X)."
                 "Try using PPs with more valence electrons such as VASP's GW potentials"
             )
         # Finally, we ensure that all nodes have an assignment
-        for node in self.bifurcation_graph:
-            if node.reducible:
-                continue
-            if getattr(node, "basin_subtype", None) is None:
-                raise Exception(
-                    "At least one ELF feature was not assigned. This is a bug. Please report to our github:"
-                    "https://github.com/jacksund/simmate/issues"
-                )
+        if len(self.bifurcation_graph.unassigned_nodes) > 0:
+            raise Exception(
+                "At least one ELF feature was not assigned. This is a bug!!! Please report it to our github:"
+                "https://github.com/SWeav02/baderkit/issues"
+            )
                 
     def _initialize_bifurcation_graph(self):
-        self._bifurcation_graph = BifurcationGraph.from_bader(
-            self, 
-            labeler="ElfAnalyzer",
-            )
+        self._bifurcation_graph = BifurcationGraph.from_labeler(self)
 
     def _mark_cores(self):
         logging.info("Marking atomic cores")
@@ -291,16 +233,12 @@ class ElfAnalyzer(Bader):
         
         for node in possible_shells:
             # we want to find the highest ELF value where these features contribute
-            # to another atoms outer shell. This isn't necessarily the first
-            # parent that contains multiple atoms, as shells/covalent bonds often
-            # connect to each other before surrounding a new atom. We want the
-            # first ancestor that surrounds an atom that would otherwise not
-            # be surrounded without candidate shells/covalent bonds
-            
-            # TODO: This method of finding the point where a shell surrounds a
-            # new atom feels scuffed and I'm probably too tired to be thinking
-            # through it right now. I need to think through it carefully.
-            # set backup
+            # to another atoms outer shell. This isn't always the first
+            # parent that contains multiple atoms, as shells and heterogenous 
+            # covalent bonds usually connect to each other before surrounding
+            # a different atom. Instead we want the first ancestor that surrounds
+            # a new atom without being in contact with that atoms shells/core
+
             highest_neighbor_shell = node.ancestors[-1].max_value
             
             included_atoms = node.contained_atoms
@@ -327,8 +265,6 @@ class ElfAnalyzer(Bader):
                     for child in node.deep_children:
                         if not child.is_reducible:
                             child.subtype = "shell"
-
-
     
     def _mark_covalent(self):
         """
@@ -365,7 +301,7 @@ class ElfAnalyzer(Bader):
                 min_covalent_angle=min_covalent_angle,
                 )
         else:
-            nodes_in_tolerance = []
+            nodes_in_tolerance, atom_neighs = [], []
             
         for node, in_tolerance, (atom0, atom1) in zip(valence_nodes, nodes_in_tolerance, atom_neighs):
             # skip nodes that aren't within our angle tolerance
@@ -401,6 +337,11 @@ class ElfAnalyzer(Bader):
 
             if is_covalent:
                 node.feature_subtype = "covalent"
+                # we also go ahead and set the neighboring atoms to avoid some
+                # CrystalNN calculations
+                node.coord_atom_indices = [atom0, atom1]
+        # note we've labeled our covalent features
+        self._labeled_covalent = True
                 
     def _mark_lonepairs(self):
         logging.info("Marking lone-pair features")
@@ -415,321 +356,132 @@ class ElfAnalyzer(Bader):
             # now check if all the children of this parent are covalent or atomic
             all_covalent = True
             all_atomic = True
+            # also check that there is at least one of these. If not, this is
+            # a misassigned set of shells
+            any_covalent = False
+            any_atomic = False
             for child in parent.deep_children:
                 if child.is_reducible:
                     continue
+                
+                if child.feature_subtype in ["covalent"]:
+                    any_covalent = True
+                elif child.feature_subtype in ["core", "shell"]:
+                    any_atomic = True
+                    
                 if not child.feature_subtype in ["covalent", "lone-pair", None]:
                     all_covalent = False
                 if not child.feature_subtype in ["core", "shell", None]:
                     all_atomic = False
+            
+            if not any_covalent and not any_atomic:
+                # This is a deep_shell instead
+                node.feature_subtype = "deep shell"
+                
             if all_covalent or (node.charge > self.min_covalent_charge and all_atomic):
                 node.feature_subtype = "lone-pair"
 
-    
-    def _mark_feature_radii(self):
-        basin_radii = self.basin_surface_distances
-        for node in self.bifurcation_graph:
-            # skip atomic and reducible features
-            if node.reducible or getattr(node, "basin_type") != "val":
-                continue
-            basins = node.basins
-            node.feature_radius = basin_radii[basins].min()
-        
-    def _mark_bare_electron_indicator(self):
-        """
-        Takes in a bifurcation graph and calculates an electride character
-        score for each valence feature. Electride character ranges from
-        0 to 1 and is the combination of several different metrics:
-        ELF value, charge, depth, volume, and atom distance.
-        """
-        # create a structure object with oxidation states for improved 
-        # crystalnn
-        temp_structure = self.structure.copy()
-        temp_structure.add_oxidation_state_by_guess()
-        
-        for node in track(self.bifurcation_graph, description="Calculating bare electron character"):
-            # skip atomic and reducible features
-            if node.reducible or getattr(node, "basin_type") != "val":
-                continue
-            
-            # We want to get a metric of how "bare" each feature is. To do this,
-            # we need a value that ranges from 0 to 1 for each attribute we have
-            # available. We can combine these later with or without weighting to
-            # get a final value from 0 to 1.
-            # First, the ELF value already ranges from 0 to 1, with 1 being more
-            # localized. We don't need to alter this in any way.
-            elf_contribution = node.max_elf
-
-            # next, we look at the charge. If we are using a spin polarized result
-            # the maximum amount should be 1. Otherwise, the value could be up
-            # to 2. We make a guess at what the value should be here
-            charge = node.charge
-            if self._spin_polarized:
-                max_value = 1
+    def _mark_metallic(self):
+        logging.info("Marking low-depth metal features")
+        # The remaining features are various types of non-nuclear attractors.
+        # A particularly common one that shows up in metallic systems is an
+        # interconnected network of basins with extremely shallow depths. We
+        # label anything below our cutoff as a metal
+        for node in self.bifurcation_graph.unassigned_nodes:
+            if node.depth_to_infinite <= self.max_metal_depth:
+                node.feature_subtype = "metallic"
             else:
-                if 0 < charge <= 1.1:
-                    max_value = 1
-                else:
-                    max_value = 2
-            # Anything significantly below our indicates metallic character and
-            # anything above indicates a feature like a covalent bond with pi contribution.
-            # we use a symmetric linear equation around our max value that maxes out at 1
-            # where the charge exactly matches and decreases moving away.
-            if charge <= max_value:
-                charge_contribution = charge / max_value
-            else:
-                # If somehow our charge is much greater than the value, we will
-                # get a negative value, so we use a max function to prevent this
-                charge_contribution = max(-charge / max_value + 2, 0)
-
-            # Now we look at the depth of our feature. Like the ELF value, this
-            # can only be from 0 to 1, and bare electrons tend to take on higher
-            # values. Therefore, we leave this as is.
-            # NOTE: The depth here is the depth to the first irreducible feature
-            # that extends infinitely in at least one direction. This is different
-            # from the technical "depth" used in ELF topology analysis, but is
-            # more related to how isolated a feature is.
-            depth_contribution = node.depth_to_infinite
-
-            # Next is the volume. Bare electrons are usually thought of as being
-            # similar to a free s-orbital with a similar size to a hydride. Therefore
-            # we use the hydride crystal radius to calculate an ideal volume and set
-            # this contribution as a fraction of this, capping at 1.
-            hydride_radius = 1.34  # Taken from wikipedia and subject to change
-            hydride_volume = 4 / 3 * 3.14159 * (hydride_radius**3)
-            volume_contribution = min(node.volume / hydride_volume, 1)
-
-            # Next is the distance from the atom. Ideally this should be scaled
-            # relative to the radius of the atom, but which radius to use is a
-            # difficult question. We use CrystalNN to get the neighbors around
-            # the nearest atom and get the EN difference. We use this to guess
-            # whether covalent or ionic radii should be used, then pull the appropriate one.
-            # First, we also want to get the coordination environment of this
-            # feature, even though this doesnt feed into our BEI.
-            # TODO: I don't like this because it probably scales poorly due to
-            # CrystalNN. Is there a way to get the neighbors without this?
-            frac_coords = node.frac_coords
-            feature_structure = temp_structure.copy()
-            feature_structure.append("H-", frac_coords)
-            cnn = CrystalNN(distance_cutoffs=None)
-            coordination = cnn.get_nn_info(feature_structure, -1)
-            coord_num = len(coordination)
-            coord_indices = [i["site_index"] for i in coordination]
-            coord_atoms = [feature_structure[i].specie.symbol for i in coord_indices]
-            # Now that we have the nearby atoms, we want to get the smallest radius
-            # of this basin
-            atom_indices = np.unique(coord_indices)
-            atom_radius = 10
-            atom_distance = 10
-            dist_minus_radius = 10
-            nearest_atom_idx = -1
-            nearest_atom_species = None
-            for atom_idx in atom_indices:
-                atom_radius_new = self.atomic_radii[atom_idx]
-                dist = feature_structure.get_distance(atom_idx, -1)
-                dist_minus_radius_new = dist-atom_radius_new
-                if dist_minus_radius_new < dist_minus_radius:
-                    dist_minus_radius = dist_minus_radius_new
-                    atom_radius = atom_radius_new
-                    atom_distance = dist
-                    nearest_atom_idx = atom_idx
-                    nearest_atom_species = feature_structure[atom_idx].specie.symbol
-                    
-            # Now that we have a radius, we need to get a metric of 0-1. We need
-            # to set an ideal distance corresponding to 1 and a minimum distance
-            # corresponding to 0. The ideal distance is the sum of the atoms radius
-            # plus the radius of a true bare electron (approx the H- radius). The
-            # minimum radius should be 0, corresponding to the radius of the atom.
-            # Thus covalent bonds should have a value of 0 and lone-pairs may
-            # be slightly within this radius, also recieving a value of 0.
-            radius = dist - atom_radius
-            dist_contribution = radius / hydride_radius
-            # limit to a range of 0 to 1
-            dist_contribution = min(max(dist_contribution, 0), 1)
-
-            # We want to keep track of the full values in a convenient way
-            unnormalized_contributors = np.array(
-                [
-                    elf_contribution,
-                    charge,
-                    depth_contribution,
-                    node.volume,
-                    dist_minus_radius,
-                ]
-            )
-            # Finally, our bare electron indicator is a linear combination of
-            # the indicator above. The contributions are somewhat arbitrary, but
-            # are based on chemical intuition. The ELF and charge contributions
-            contributers = np.array(
-                [
-                    elf_contribution,
-                    charge_contribution,
-                    depth_contribution,
-                    volume_contribution,
-                    dist_contribution,
-                ]
-            )
-            weights = np.array(
-                [
-                    0.2,
-                    0.2,
-                    0.2,
-                    0.2,
-                    0.2,
-                ]
-            )
-            bare_electron_indicator = np.sum(contributers * weights)
-
-            
-            # we update our node to include this information
-            node.unnormalized_bare_electron_indicator = unnormalized_contributors
-            node.bare_electron_indicator = bare_electron_indicator
-            node.bare_electron_scores = contributers
-            node.dist_beyond_atom = dist_minus_radius
-            node.coord_num = coord_num
-            node.coord_indices = coord_indices
-            node.coord_atoms = coord_atoms
-            node.atom_distance = atom_distance
-            node.nearest_atom = nearest_atom_idx
-            node.nearest_atom_type = nearest_atom_species
-    
-    def _mark_metallic_or_electride(self):
-        logging.info("Marking metallic and bare electron features")
-        # create an array of our conditions to check against
-        conditions = np.array(
-            [
-                self.electride_elf_min,
-                self.electride_depth_min,
-                self.electride_charge_min,
-                self.electride_volume_min,
-                self.electride_radius_min,
-            ]
-        )
-
-        for node in self.bifurcation_graph:
-            if getattr(node, "basin_subtype", "") != "bare electron":
-                # skip features that aren't bare electrons
-                continue
-            # we have a bare electron. We check each condition
-            condition_test = np.array(
-                [
-                    node.max_elf,
-                    node.depth_to_infinite,  # Note we use the depth to an infinite connection rather than true depth
-                    node.charge,
-                    node.volume,
-                    node.dist_beyond_atom
-                ]
-            )
-            # check if we meet all conditions. If so we have a bare electron/electride
-            if np.all(condition_test > conditions):
-                subtype = "bare electron"
-            else:
-                # We don't meet our conditions so we consider this some form
-                # of metallic feature
-                subtype = "metallic"
-            node.basin_subtype = subtype
-
+                node.feature_subtype = "non-nuclear attractor"
 
     ###########################################################################
     # Post Graph Construction
     ###########################################################################
+    
+    def get_electride_structure(
+            self,
+            min_elf_value: float = 0.5,
+            min_depth: float = 0.2,
+            min_charge: float = 0.5,
+            min_volume: float = 10,
+            min_dist_beyond_atom: float = 0.3,
+            included_features: list[str] = [
+                "covalent",
+                "metallic",
+                "non-nuclear attractor",
+                "lone-pair",
+                ]
+            ):
+        # collect cutoffs in an array
+        conditions = np.array(
+            [
+                min_elf_value,
+                min_depth,
+                min_charge,
+                min_volume,
+                min_dist_beyond_atom,
+            ]
+        )
+        
+        # Create a new structure without oxidation states
+        structure = self.structure.copy()
+        structure.remove_oxidation_states()
+        
+        for node in self.bifurcation_graph.nodes_by_types(["metallic", "non-nuclear attractor"]):
+            frac_coords = node.frac_coords
+            # get attributes to compare conditions to
+            condition_test = np.array(
+                [
+                    node.max_value,
+                    node.depth_to_infinite,  # Note we use the depth to an infinite connection rather than true depth
+                    node.charge,
+                    node.volume,
+                    node.dist_beyond_atom,
+                ]
+            )
+            # if all conditions are met, add a dummy atom
+            if np.all(condition_test > conditions):
+                structure.append(FeatureSubtype.electride.dummy_species, frac_coords)
+            elif node.feature_subtype in included_features:
+                structure.append(node.feature_subtype.dummy_species, frac_coords)
+        
+        for node in self.bifurcation_graph.nodes_by_types(included_features):
+            structure.append(node.feature_subtype.dummy_species, node.frac_coords)
+        
+        return structure
+
 
     def get_feature_structure(
             self, 
-            include_shared_features: bool = True,
-            include_lone_pairs: bool = True,
-            ):
+            included_features: list[str] = FeatureSubtype.irreducible_types
+        ):
         
-        # First, we get the valence features for this graph and create a
-        # structure that we will add features to
+        # Create a new structure without oxidation states
         structure = self.structure.copy()
         structure.remove_oxidation_states()
-        structure_index_to_node = {}
-        for feat_idx, node in enumerate(self.bifurcation_graph):
-            # skip nodes that aren't valence
-            if node.reducible or getattr(node, "basin_type") != "val":
-                continue
-
-            # get our subtype
-            subtype = node.basin_subtype
-            if subtype == "bare electron":
-                species = "e"
-            if subtype == "covalent" and include_shared_features:
-                species = "z"
-            elif subtype == "metallic" and include_shared_features:
-                species = "m"
-            elif subtype == "lone-pair" and include_shared_features:
-                species = "lp"
-
-            # Now that we have the type of feature, we want to add it to our
-            # structure.
-            frac_coords = node.frac_coords
-            structure.append(species, frac_coords)
-            structure_index_to_node[len(structure)-1] = feat_idx
-
-        # To find the atoms/electrides surrounding a covalent/metallic bond,
-        # we need the structure to be organized with atoms first, then electrides,
-        # then whatever else. We organize everything here.
-        electride_indices = structure.indices_from_symbol("E")
-        other_indices = []
-        node_to_index = {}
-        for symbol in ["M", "Z", "Lp"]:
-            other_indices.extend(structure.indices_from_symbol(symbol))
-        sorted_structure = self.structure.copy()
-        sorted_structure.remove_oxidation_states()
-        for i in electride_indices:
-            frac_coords = structure[i].frac_coords
-            sorted_structure.append("E", frac_coords)
-            node=structure_index_to_node[i]
-            node_to_index[node] = len(sorted_structure)-1
-        for i in other_indices:
-            symbol = structure.species[i].symbol
-            frac_coords = structure[i].frac_coords
-            sorted_structure.append(symbol, frac_coords)
-            node=structure_index_to_node[i]
-            node_to_index[node] = len(sorted_structure)-1
         
-        # Now we want to add the nodes index to our graph
-        for node, index in node_to_index.items():
-            self.bifurcation_graph[node].feature_structure_index = index
-
-        return sorted_structure
+        # Add nodes of each type in list
+        for node in self.bifurcation_graph.nodes_by_types(included_features):
+            structure.append(node.feature_subtype.dummy_species, node.frac_coords)
+        
+        return structure
     
     ###########################################################################
     # Utilities
     ###########################################################################
-    @property
-    def _site_voxel_coords(self) -> np.array:
-        frac_coords = self.structure.frac_coords
-        vox_coords = self.reference_grid.get_voxel_coords_from_frac(frac_coords)
-        return vox_coords.astype(int)
-    
-    # @cached_property
-    # def _site_sphere_voxel_coords(self) -> list:
-    #     site_sphere_coords = []
-    #     for vox_coord in self._site_voxel_coords:
-    #         nearby_voxels = self.reference_grid.get_voxels_in_radius(0.05, vox_coord)
-    #         site_sphere_coords.append(nearby_voxels)
-    #     return site_sphere_coords
     
     def _get_atomic_radii(self):
-        # We will need to get radii from the ELF. To do this, we need a labeled
-        # bader result to pass to our PartitioningToolkit
+        if not self._labeled_covalent:
+            logging.warning("Covalent features must be labeled for reliable radii. No radii will be returned.")
+            return
+        # The radii is set to either the minimum (ionic) or maximum (covalent)
+        # point separating two nearest atoms. Thus we need to label our structure
+        # with covalent features first.
         frac_coords = self.basin_maxima_frac
         feature_structure = self.structure.copy()
-        for node in self.bifurcation_graph:
-            # skip nodes that aren't valence
-            if node.reducible or getattr(node, "basin_type") != "val":
-                continue
-            
-            subtype = node.basin_subtype
-            
-            if subtype == "covalent":
+        for node in self.bifurcation_graph.nodes_by_types(FeatureSubtype.valence_types):
+
+            if node.feature_subtype == "covalent":
                 species = "Z"
-            elif subtype == "lone-pair":
-                # species = "Lp"
-                # We want to consider lone-pairs as part of the atom so we continue
-                continue
             else:
                 species = "X"
                 
@@ -834,12 +586,9 @@ class ElfAnalyzer(Bader):
         graph = self.bifurcation_graph
         for key in node_keys:
             node = graph.node_from_key(key)
-            basin_indices = node.basins
-            # create a mask including each of the requested basins
-            mask = np.isin(self.basin_labels, basin_indices)
             # copy data to avoid overwriting. Set data off of basin to 0
             data_array_copy = data_array.copy()
-            data_array_copy[~mask] = 0.0
+            data_array_copy[~node.basin_mask] = 0.0
             grid = Grid(
                 structure=structure,
                 data={"total": data_array_copy},
@@ -858,17 +607,132 @@ class ElfAnalyzer(Bader):
             output_format: str | Format = None,
             **writer_kwargs,
             ):
-        graph = self.bifurcation_graph
-        nodes = []
-        for node in graph:
-            if node.reducible or getattr(node, "basin_type") != "val":
-                continue
-            nodes.append(node.key)
         self.write_feature_basins(
-            nodes,
+            self.bifurcation_graph.nodes_by_types(FeatureSubtype.valence_types),
             directory,
             write_reference,
             use_feature_structure,
             output_format,
             **writer_kwargs,
             )
+        
+    # This is a method aimed at giving a feature a score on how "bare" it is
+    # with the goal of distinguishing metals from electrides. We will leave it
+    # out until we have a better metric
+    # def _mark_bare_electron_indicator(self):
+    #     """
+    #     Takes in a bifurcation graph and calculates an electride character
+    #     score for each valence feature. Electride character ranges from
+    #     0 to 1 and is the combination of several different metrics:
+    #     ELF value, charge, depth, volume, and atom distance.
+    #     """
+    #     # create a structure object with oxidation states for improved 
+    #     # crystalnn
+    #     temp_structure = self.structure.copy()
+    #     temp_structure.add_oxidation_state_by_guess()
+        
+    #     nodes = self.bifurcation_graph.nodes_by_types(["metallic", "bare electron"])
+    #     for node in track(nodes, description="Calculating bare electron character"):
+
+    #         # We want to get a metric of how "bare" each feature is. To do this,
+    #         # we need a value that ranges from 0 to 1 for each attribute we have
+    #         # available. We can combine these later with or without weighting to
+    #         # get a final value from 0 to 1.
+    #         # First, the ELF value already ranges from 0 to 1, with 1 being more
+    #         # localized. We don't need to alter this in any way.
+    #         elf_contribution = node.max_elf
+
+    #         # next, we look at the charge. If we are using a spin polarized result
+    #         # the maximum amount should be 1. Otherwise, the value could be up
+    #         # to 2. We make a guess at what the value should be here
+    #         charge = node.charge
+    #         if self._spin_polarized:
+    #             max_value = 1
+    #         else:
+    #             if 0 < charge <= 1.1:
+    #                 max_value = 1
+    #             else:
+    #                 max_value = 2
+    #         # Anything significantly below our indicates metallic character and
+    #         # anything above indicates a feature like a covalent bond with pi contribution.
+    #         # we use a symmetric linear equation around our max value that maxes out at 1
+    #         # where the charge exactly matches and decreases moving away.
+    #         if charge <= max_value:
+    #             charge_contribution = charge / max_value
+    #         else:
+    #             # If somehow our charge is much greater than the value, we will
+    #             # get a negative value, so we use a max function to prevent this
+    #             charge_contribution = max(-charge / max_value + 2, 0)
+
+    #         # Now we look at the depth of our feature. Like the ELF value, this
+    #         # can only be from 0 to 1, and bare electrons tend to take on higher
+    #         # values. Therefore, we leave this as is.
+    #         # NOTE: The depth here is the depth to the first irreducible feature
+    #         # that extends infinitely in at least one direction. This is different
+    #         # from the technical "depth" used in ELF topology analysis, but is
+    #         # more related to how isolated a feature is.
+    #         depth_contribution = node.depth_to_infinite
+
+    #         # Next is the volume. Bare electrons are usually thought of as being
+    #         # similar to a free s-orbital with a similar size to a hydride. Therefore
+    #         # we use the hydride crystal radius to calculate an ideal volume and set
+    #         # this contribution as a fraction of this, capping at 1.
+    #         hydride_radius = 1.34  # Taken from wikipedia and subject to change
+    #         hydride_volume = 4 / 3 * 3.14159 * (hydride_radius**3)
+    #         volume_contribution = min(node.volume / hydride_volume, 1)
+
+    #         # Next is the radius which is based on the average distance to the
+    #         # features surface. We need
+    #         # to set an ideal distance corresponding to 1 and a minimum distance
+    #         # corresponding to 0. The ideal distance is the sum of the atoms radius
+    #         # plus the radius of a true bare electron (approx the H- radius). The
+    #         # minimum radius should be 0, corresponding to the radius of the atom.
+    #         # Thus covalent bonds should have a value of 0 and lone-pairs may
+    #         # be slightly within this radius, also recieving a value of 0.
+    #         radius = node.average_surface_dist
+                    
+    #         # Now that we have a radius, we need to get a metric of 0-1. 
+    #         dist_contribution = radius / hydride_radius
+    #         # limit to a range of 0 to 1
+    #         dist_contribution = min(max(dist_contribution, 0), 1)
+
+    #         # We want to keep track of the full values in a convenient way
+    #         unnormalized_contributors = np.array(
+    #             [
+    #                 elf_contribution,
+    #                 charge,
+    #                 depth_contribution,
+    #                 node.volume,
+    #                 radius,
+    #             ]
+    #         )
+    #         # Finally, our bare electron indicator is a linear combination of
+    #         # the indicator above. The contributions are somewhat arbitrary, but
+    #         # are based on chemical intuition. The ELF and charge contributions
+    #         contributers = np.array(
+    #             [
+    #                 elf_contribution,
+    #                 charge_contribution,
+    #                 depth_contribution,
+    #                 volume_contribution,
+    #                 dist_contribution,
+    #             ]
+    #         )
+    #         weights = np.array(
+    #             [
+    #                 0.2,
+    #                 0.2,
+    #                 0.2,
+    #                 0.2,
+    #                 0.2,
+    #             ]
+    #         )
+    #         bare_electron_indicator = np.sum(contributers * weights)
+
+            
+    #         # we update our node to include this information
+    #         node.unnormalized_bare_electron_indicator = unnormalized_contributors
+    #         node.bare_electron_indicator = bare_electron_indicator
+    #         node.bare_electron_scores = contributers
+
+
