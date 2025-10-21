@@ -325,7 +325,7 @@ def get_features_surrounding_atoms(
                 size=size,
                 neighbors=neighbor_transforms,
                 )
-
+        
         # Get which features surround each atom
         all_surrounding_features = find_all_atom_features(
                 atom_grid_coords=atom_grid_coords,
@@ -359,10 +359,6 @@ def get_features_surrounding_atoms(
                     if feature_idx == current_feature_idx:
                         current_feature_atoms[sub_idx].append(atom_idx)
                         break
-        # if no atoms are surrounded, they never will be again and we are done
-        # here
-        if no_atoms_surrounded:
-            break
         
         # append any new features
         for feature_idx, feature_atoms in zip(current_features, current_feature_atoms):
@@ -405,6 +401,11 @@ def get_features_surrounding_atoms(
                     # get the parents new index
                     new_parent = new_feature_map[old_parent]
                     new_feature_parents.append(new_parent)
+                    
+        # if no atoms are surrounded, they never will be again and we are done
+        # here
+        if no_atoms_surrounded:
+            break
     
     # we need to fill in the data for any remaining features that don't surround
     # atoms

@@ -207,7 +207,7 @@ class BifurcationGraph:
         # get atom grid coordinates
         atom_grid_coords = reference_grid.frac_to_grid(bader.structure.frac_coords)
         atom_grid_coords = np.round(atom_grid_coords).astype(np.int64) % reference_grid.shape
-        breakpoint()
+
         # get the atoms each feature contains
         (
             feature_basins,
