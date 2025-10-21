@@ -78,17 +78,25 @@ def check_possible_bifurcation(
     root_mask = np.zeros(27, dtype=np.bool_)
 
     # mark mask
+    no_same = True
     for shift_idx, (si, sj, sk) in enumerate(shifts):
         # skip center so that it is never in mask
         if shift_idx == 13:
             continue
         ni, nj, nk = wrap_point(i+si, j+sj, k+sk, nx, ny, nz)
         neigh_value = data[ni,nj,nk]
-        if (greater and neigh_value >= value) or (not greater and neigh_value <= value):
+        if (greater and neigh_value > value) or (not greater and neigh_value < value):
             # mark in mask and instantiate as a root
             value_mask[shift_idx] = True
             root_mask[shift_idx] = True
+        elif neigh_value == value:
+            no_same = False
+            break
     
+    # if any values are the same as our center, we need a larger neighborhood
+    # to be sure if this region is a bif
+    if not no_same:
+        return True
     # iterate over connections and make unions
     for connection_idx, (shift1, shift2) in enumerate(shift_connections):
         # skip if one is not in mask

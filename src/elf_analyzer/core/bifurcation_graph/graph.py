@@ -75,8 +75,8 @@ class BifurcationGraph:
         return [i for i in self if i.is_reducible]
     
     @property
-    def unassigned_irreducible_nodes(self):
-        return [i for i in self if i.feature_type in ("irreducible", "shallow")]
+    def unassigned_nodes(self):
+        return [i for i in self if i.feature_subtype is None or i.feature_subtype == "shallow"]
     
     def to_dict(self) -> dict:
         # NOTE: This could just be a to list method, but I may add other meta
@@ -136,19 +136,10 @@ class BifurcationGraph:
             bif_mask=bif_mask,
             neighbor_transforms=neighbor_transforms,
             )
-        # clear mask
-        bif_mask = None
-        
-        # get connections between neighboring basins
-        # lower_points, upper_points, connection_values = find_connections(
-        #     bader.basin_labels,
-        #     reference_grid.total,
-        #     bader.basin_edges,
-        #     len(bader.basin_maxima_frac),
-        #     neighbor_transforms,
-        #     )
 
-        # breakpoint()
+        # clear mask for memory
+        bif_mask = None
+
         # add maxima values as the points each basin "connects" to itself
         basin_maxima = bader.basin_maxima_ref_values
         basin_indices = np.arange(len(basin_maxima))
@@ -193,32 +184,45 @@ class BifurcationGraph:
         
         t1 = time.time()
         logging.info(f"Time: {round(t1-t0, 2)}")
-
+        
         #######################################################################
         # Get Atoms Surrounded by Each Feature
         #######################################################################
         logging.info("Finding contained atoms")    
         
         # possible saddle points where voids between features first connect
-        # bif_mask = find_potential_bifs(
-        #     data=reference_grid.total,
-        #     edge_mask=bader.basin_edges,
-        #     neighbor_transforms=neighbor_transforms,
-        #     greater=False
-        #     )
-        
-        # breakpoint()
+        bif_mask = find_potential_bifs(
+            data=reference_grid.total,
+            edge_mask=bader.basin_edges,
+            greater=False
+            )
+        # get the possible values and clear mask
+        bif_values = reference_grid.total[bif_mask]
+        bif_mask = None
+
+        # add the values from the feature bifurcations and get only the
+        # unique options
+        bif_values = np.unique(np.append(bif_values, feature_min_values))
         
         # get atom grid coordinates
         atom_grid_coords = reference_grid.frac_to_grid(bader.structure.frac_coords)
         atom_grid_coords = np.round(atom_grid_coords).astype(np.int64) % reference_grid.shape
-        
+        breakpoint()
         # get the atoms each feature contains
-        feature_atoms = get_features_surrounding_atoms(
+        (
+            feature_basins,
+            feature_min_values,
+            feature_max_values,
+            feature_dims,
+            feature_parents,
+            feature_atoms,
+            ) = get_features_surrounding_atoms(
+                possible_values=bif_values,
                 feature_basins=feature_basins,
                 feature_min_values=feature_min_values,
                 feature_max_values=feature_max_values,
                 feature_dims=feature_dims,
+                feature_parents=feature_parents,
                 atom_grid_coords=atom_grid_coords,
                 neighbor_transforms=neighbor_transforms,
                 basin_labels=bader.basin_labels,
@@ -279,6 +283,21 @@ class BifurcationGraph:
 
             node_keys.append(node.key)
                 
+        # give each reducible node a subtype
+        for node in graph.reducible_nodes:
+            parent = node.parent
+            if parent is None:
+                node.feature_subtype = "root"
+                continue
+            # if the number of basins changes, this is a standard reducible domain
+            elif len(parent.basins) != len(node.basins):
+                node.feature_subtype = "reducible"
+            # check for dimension change
+            elif parent.dimensionality != node.dimensionality:
+                node.feature_subtype = "dim_change"
+            elif len(parent.contained_atoms) != len(node.contained_atoms):
+                node.feature_subtype = "atom_change"
+        
         # sometimes we get extremely shallow reducible features that seem to
         # result from voxelation. Their depth is only one significant figure
         # deep
@@ -288,7 +307,7 @@ class BifurcationGraph:
         # Now we check for reducible nodes that should really be considered
         # irreducible. These nodes are very deep but their children separate
         # at very low values
-        # cls._combine_shallow_irreducible_nodes(graph)
+        cls._combine_shallow_irreducible_nodes(graph)
         
         return graph
     
@@ -339,8 +358,9 @@ class BifurcationGraph:
             # if the node is shallow, we will combine all of its children later.
             # for now, we note that its children have already been checked
             for child in node.deep_children:
-                if node.is_reducible:
+                if child.is_reducible:
                     checked_nodes.append(child.key)
+
         # now we combine all of the nodes 
         for node in nodes_to_combine:
             node.make_irreducible()
@@ -357,11 +377,13 @@ class BifurcationGraph:
         Xn = [] # The X value where the node appears
         Xn1 = []  # The X value where the node disappears
         labels = [] # Strings summarizing node features
-        types = [] # The type of feature (reducible, core, covalent, etc.)
+        types = [] # The type of feature (reducible, irreducible)
+        subtypes = [] # The subtype of feature (reducible, dim change, core, covalent, etc.)
         for i, node in enumerate(self):
             # get info for each node
             labels.append(node.plot_label)
             types.append(node.feature_type)
+            subtypes.append(node.feature_subtype)
             indices.append(node.key)
             Xn.append(round(node.min_value, 4))
             Xn1.append(max(node.max_value, node.max_value - node.depth + 0.01))
@@ -451,22 +473,23 @@ class BifurcationGraph:
         Yn0 = Yn - y_division / 3
         Yn1 = Yn + y_division / 3
         already_added_types = set()
-        for idx, (feature_type, label) in enumerate(zip(types, labels)):
+
+        for idx, (feature_type, feature_subtype, label) in enumerate(zip(types, subtypes, labels)):
             # get color
-            color = NODE_COLORS.get(feature_type)
+            color = NODE_COLORS.get(feature_subtype)
             
             # only add to legend if this type hasn't been found previously
             showlegend = feature_type not in already_added_types
             already_added_types.add(feature_type)
 
-            if feature_type == "reducible":
+            if feature_type == "ReducibleNode":
                 # add a circle
                 fig.add_trace(
                     go.Scatter(
                         x=[Xn[idx]],
                         y=[Yn[idx]],
                         mode="markers",
-                        name=f"{feature_type}",
+                        name=f"{feature_subtype}",
                         marker=dict(
                             symbol="circle-dot",
                             size=18,
@@ -493,7 +516,7 @@ class BifurcationGraph:
                         line=dict(color=LINE_COLOR),
                         hoverinfo="text",
                         text=label,
-                        name=f"{feature_type}",
+                        name=f"{feature_subtype}",
                         mode="lines",
                         opacity=0.8,
                         showlegend=showlegend,

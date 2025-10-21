@@ -11,7 +11,7 @@ from elf_analyzer.core.bifurcation_graph.infinite_feature_numba import (
     get_connected_features,
     )
 
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def get_connected_voids(
         solid,
         previous_solid,
@@ -64,7 +64,7 @@ def get_connected_voids(
     # and voids
     connection_counts = np.zeros((len(roots), num_features), dtype=np.uint32)
     # loop over indices and count connections
-    for i in range(nx):
+    for i in prange(nx):
         for j in range(ny):
             for k in range(nz):
                 
@@ -90,6 +90,9 @@ def get_connected_voids(
                     neigh_basin = basin_labels[ni, nj, nk]
                     feature = basin_feature_map[neigh_basin]
                     
+                    # this isn't technically safe, but I think it will usually
+                    # have very little effect and it makes a big difference in
+                    # speed
                     connection_counts[root_idx, feature] += 1
 
     return (
@@ -106,7 +109,7 @@ def get_connected_voids(
 
 
 
-# @njit(cache=True)
+@njit(cache=True)
 def find_atom_features(
         atom_coords,
         parent,
@@ -172,7 +175,7 @@ def find_atom_features(
             is_void = True
     return surrounding_features
     
-# @njit(parallel=True,cache=True)
+@njit(parallel=True,cache=True)
 def find_all_atom_features(
         atom_grid_coords,
         parent,
@@ -215,12 +218,14 @@ def find_all_atom_features(
 
     return all_surrounding_features
 
-# @njit(cache=True)
+@njit(cache=True)
 def get_features_surrounding_atoms(
+        possible_values,
         feature_basins,
         feature_min_values,
         feature_max_values,
         feature_dims,
+        feature_parents,
         atom_grid_coords,
         neighbor_transforms,
         basin_labels,
@@ -230,11 +235,11 @@ def get_features_surrounding_atoms(
     nx, ny, nz = data.shape
     N = nx * ny * nz
     
-    # get unique elf values to iterate over
-    unique_elfs = np.unique(feature_min_values)
-    
     # create map from basin labels to feature labels
     basin_feature_map = np.empty(num_basins, dtype=np.uint32)
+    
+    # create a map for old features to new
+    new_feature_map = np.full(len(feature_parents), -1, dtype=np.int64)
     
     # create an initial empty solid
     new_solid = np.zeros((nx,ny,nz), dtype=np.bool_) # initial empty solid
@@ -247,46 +252,49 @@ def get_features_surrounding_atoms(
     offset_z = np.zeros(N, dtype=np.int8)
     size = np.ones(N, dtype=np.uint16) # no size to start
     
-    # create lists to track which features surround atoms
-    feature_atoms = []
-    for i in range(len(feature_basins)):
-        feature_list = [-1]
-        feature_list = feature_list[1:]
-        feature_atoms.append(feature_list)
+    # create lists for updated features
+    new_feature_basins = []
+    new_feature_min_values = []
+    new_feature_max_values = []
+    new_feature_dims = []
+    new_feature_parents = []
     
-    for elf_value in unique_elfs:
+    # create lists to track which features surround atoms
+    all_feature_atoms = []
+    
+    current_features = [-1]
+    current_features = current_features[1:]
+    current_feature_atoms = [[-1]]
+    current_feature_atoms = current_feature_atoms[1:]
+    # iterate over all possible values
+    for current_value in possible_values:
         # NOTE: I don't think we need to set the basin_feature_map to a default
         # value because it shouldn't be possible for a void to touch a feature
         # other than one in this list
-        
+        previous_features = current_features.copy()
+        current_features = []
         new_features = []
-        all_features = []
         num_features = 0
         # get the features that exist at this elf value and construct basin map
         for feature_idx, (min_value, max_value) in enumerate(zip(feature_min_values, feature_max_values)):
             
-            if min_value <= elf_value and max_value > elf_value:
+            if min_value <= current_value and max_value > current_value:
                 # This feature currently has some volume in the isosolid
                 # create map for each basin in this feature
                 # add it to our list
-                all_features.append(feature_idx)
+                current_features.append(feature_idx)
                 # map each basin in this feature back to the feature
                 for basin_idx in feature_basins[feature_idx]:
                     basin_feature_map[basin_idx] = num_features
                 # note we found a new feature
                 num_features += 1
-                
-                # if the feature just appeared, add it to our list
-                if min_value == elf_value:
-                    # this feature just appeared.
+                if min_value == current_value:
                     new_features.append(feature_idx)
-                
-            else:
-                continue
+
         
         # get void/feature connection information at this elf value
         previous_solid = new_solid
-        new_solid = data <= elf_value
+        new_solid = data <= current_value
         # TODO: I can probably improve speed further by freezing features/basins
         # that have been found to not surround anything, decreasing the number
         # of voxels that need to be checked for unions
@@ -317,7 +325,7 @@ def get_features_surrounding_atoms(
                 size=size,
                 neighbors=neighbor_transforms,
                 )
-                
+
         # Get which features surround each atom
         all_surrounding_features = find_all_atom_features(
                 atom_grid_coords=atom_grid_coords,
@@ -325,29 +333,111 @@ def get_features_surrounding_atoms(
                 solid=new_solid,
                 basin_labels=basin_labels,
                 basin_feature_map=basin_feature_map,
-                all_features=all_features,
+                all_features=current_features,
                 connection_counts=connection_counts,
                 void_roots=roots,
                 feature_dims=feature_dims,
                 void_dims=dimensionalities,
                 )
         
+        # Get the atoms surrounded by each feature
         # track if no atoms are surrounded
         no_atoms_surrounded = True
+        previous_feature_atoms = current_feature_atoms.copy()
+        current_feature_atoms = []
+        for i in range(len(current_features)):
+            feature_list = [-1]
+            feature_list = feature_list[1:]
+            current_feature_atoms.append(feature_list)
         # Add atoms to feature lists
         for atom_idx, feature_list in enumerate(all_surrounding_features):
             if len(feature_list) == 0:
                 continue
             no_atoms_surrounded = False
-            for feature_idx in feature_list: # skip placeholder value
-                if feature_idx in new_features:
-                    feature_atoms[feature_idx].append(atom_idx)
+            for feature_idx in feature_list:
+                for sub_idx, current_feature_idx in enumerate(current_features):
+                    if feature_idx == current_feature_idx:
+                        current_feature_atoms[sub_idx].append(atom_idx)
+                        break
         # if no atoms are surrounded, they never will be again and we are done
         # here
         if no_atoms_surrounded:
             break
         
-    return feature_atoms
+        # append any new features
+        for feature_idx, feature_atoms in zip(current_features, current_feature_atoms):
+            append = False
+            is_new = False
+            if feature_idx in new_features:
+                append = True
+            else:
+                # check if this feature changed the number of atoms it contains
+                for old_feature_idx, old_feature_atoms in zip(previous_features, previous_feature_atoms):
+                    if old_feature_idx == feature_idx:
+                        if len(old_feature_atoms) != len(feature_atoms):
+                            append = True
+                            is_new = True
+                        break
+            if append:
+                new_feature_basins.append(feature_basins[feature_idx])
+                new_feature_min_values.append(current_value)
+                new_feature_max_values.append(feature_max_values[feature_idx])
+                new_feature_dims.append(feature_dims[feature_idx])
+                all_feature_atoms.append(feature_atoms)
+                if is_new:
+                    previous_idx = new_feature_map[feature_idx]
+                    # This feature changed atom counts. Update its old max
+                    # value to be the current value
+                    new_feature_max_values[previous_idx] = current_value
+                    # set a new mapping for this feature
+                    new_feature_map[feature_idx] = len(new_feature_parents)
+                    # set the parent to the previous version surrounding a different
+                    # number of atoms
+                    new_feature_parents.append(previous_idx)
+                else:
+                    # update this features index
+                    new_feature_map[feature_idx] = len(new_feature_parents)
+                    # get the old parent for this feature
+                    old_parent = feature_parents[feature_idx]
+                    if old_parent == -1:
+                        new_feature_parents.append(-1)
+                        continue
+                    # get the parents new index
+                    new_parent = new_feature_map[old_parent]
+                    new_feature_parents.append(new_parent)
+    
+    # we need to fill in the data for any remaining features that don't surround
+    # atoms
+    for feature_idx in range(len(feature_min_values)):
+        # check if this feature was ever given a mapping
+        if not new_feature_map[feature_idx] == -1:
+            continue
+        # otherwise, we add all of the needed features
+        new_feature_basins.append(feature_basins[feature_idx])
+        new_feature_min_values.append(feature_min_values[feature_idx])
+        new_feature_max_values.append(feature_max_values[feature_idx])
+        new_feature_dims.append(feature_dims[feature_idx])
+        all_feature_atoms.append([-1])
+        all_feature_atoms[-1] = all_feature_atoms[-1][1:]
+        # update this features index
+        new_feature_map[feature_idx] = len(new_feature_parents)
+        # get the old parent for this feature
+        old_parent = feature_parents[feature_idx]
+        if old_parent == -1:
+            new_feature_parents.append(-1)
+            continue
+        # get the parents new index
+        new_parent = new_feature_map[old_parent]
+        new_feature_parents.append(new_parent)
+        
+    return (
+        new_feature_basins, 
+        np.array(new_feature_min_values, dtype=np.float64), 
+        np.array(new_feature_max_values, dtype=np.float64), 
+        np.array(new_feature_dims, dtype=np.int64), 
+        np.array(new_feature_parents, dtype=np.int64),
+        all_feature_atoms,
+        )
 
 
 

@@ -5,7 +5,10 @@ This file defines plot coloring defaults for different node types
 """
 
 NODE_COLORS = {
+    "root": "rgba(128, 128, 128, 1)",  # grey
     "reducible": "rgba(128, 128, 128, 1)",  # grey
+    "dim_change": "rgba(154, 128, 128, 1)",  # redish grey
+    "atom_change": "rgba(128, 128, 154, 1)",  # bluish grey
     "irreducible": "rgba(47, 79, 79, 1)", # dark slate gray
     "shallow": "rgba(47, 79, 79, 1)", # dark slate gray
     "shell": "rgba(60, 60, 60, 1)", # dark grey

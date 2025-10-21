@@ -71,7 +71,7 @@ class ElfAnalyzer(Bader):
     def __init__(
         self,
         ignore_low_pseudopotentials: bool = False,
-        shell_depth: float = 0.05,
+        shared_shell_ratio: float = 0.5,
         combine_shells: bool = True,
         min_covalent_charge: float = 0.6,
         min_covalent_angle: float = 135,
@@ -92,7 +92,7 @@ class ElfAnalyzer(Bader):
         
         # define cutoff variables
         # TODO: These should be hidden variables to allow for setter methods
-        self.shell_depth = shell_depth
+        self.shared_shell_ratio = shared_shell_ratio
         self.combine_shells = combine_shells
         self.min_covalent_charge = min_covalent_charge
         self.min_covalent_angle = min_covalent_angle
@@ -171,6 +171,9 @@ class ElfAnalyzer(Bader):
         # Now we have a graph with information associated with each basin. We want
         # to label each node. First, we label cores as they are the simplest
         self._mark_cores()
+        
+        # Next, we mark shells
+        self._mark_shells()
         
         plot = self.bifurcation_graph.get_plot()
         plot.write_html("test1.html")
@@ -271,19 +274,59 @@ class ElfAnalyzer(Bader):
         # a different type of basin to contain the atom if too few valence electrons
         # are in the pseudopotential
         max_dist = self.reference_grid.max_point_dist
-        for node in self.bifurcation_graph.unassigned_irreducible_nodes:
+        for node in self.bifurcation_graph.unassigned_nodes:
             if len(node.contained_atoms) != 1:
                 continue
             if node.atom_distance <= max_dist:
-                node.feature_type = "core"
+                node.feature_subtype = "core"
                 
     def _mark_shells(self):
         logging.info("Marking atomic shells")
-        # shells are "reducible" features that surround exactly one atom. Many
-        # shouldn't truly be considered reducible, but rather spherical irreducible
-        # nodes. Each child of the feature must have a similar range where it
-        # exists
-        # and be significantly closer to the atom than any neighbor.
+        # shells are "reducible" features that surround exactly one atom. The
+        # main difficulty is distinguishing them from heterogeneous covalent
+        # bonds.
+        
+        # as a first step, we label any features that were combined when the
+        # graph was generated due to being very shallow. These will be marked
+        # "shallow" and contain one atom
+        for node in self.bifurcation_graph.unassigned_nodes:
+            if node.feature_subtype == "shallow" and len(node.contained_atoms) == 1:
+                node.feature_subtype = "shell"
+                
+        # Now we label shells that may be slightly deeper. Regardless of depth,
+        # shells will always surround a single atom. To distinguish them from
+        # heterogenous covalent bonds (which also may surround 1 atom), we gauge
+        # the degree to which the potential shell features belong to the atom's
+        # shell vs. another atoms shell. This can be thought of as a measure of
+        # ionicity. To measure this, we compare the highest ELF value where
+        # the feature fully surrounds the single atom to the highest value where
+        # it surrounds at least one other atom
+
+        for node in self.bifurcation_graph.reducible_nodes:
+            # skip nodes that don't surround a single atom or have a dimensionality above 0
+            if node.is_infinite or len(node.contained_atoms) != 1:
+                continue
+            # skip nodes that have children that also contain the single atom
+            if any([len(i.contained_atoms) == 1 for i in node.children]):
+                continue
+            # get the highest ELF where this features ancestors contain more than one atom
+            for parent in node.ancestors:
+                if len(parent.contained_atoms) > 1:
+                    highest_neighbor_shell = parent.max_value
+                    break
+            # get the highest point where this feature contains the atom
+            highest_nearest_shell = node.max_value
+            # check if the ratio is below our cutoff
+            if (highest_neighbor_shell / highest_nearest_shell) < self.shared_shell_ratio:
+                if self.combine_shells:
+                    # convert to an irreducible node
+                    node = node.make_irreducible()
+                    node.feature_subtype = "shell"
+                else:
+                    for child in node.deep_children:
+                        if not child.is_reducible:
+                            child.subtype = "shell"
+
     
     def _mark_atomic(self):
         logging.info("Marking atomic features")

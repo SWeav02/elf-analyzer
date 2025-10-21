@@ -15,7 +15,6 @@ Node = TypeVar("Node", bound="NodeBase")
 class NodeBase(ABC):
     
     _registry: Dict[str, Type["NodeBase"]] = {}
-    node_type = None
     feature_type = None
     is_reducible = False
     
@@ -29,6 +28,7 @@ class NodeBase(ABC):
             max_value: float,
             key: int | None = None,
             parent: Node | int | None = None,
+            feature_subtype: str = None,
             ):
         
         # set properties that all nodes have
@@ -38,6 +38,7 @@ class NodeBase(ABC):
         self.contained_atoms = np.array(contained_atoms)
         self.min_value = float(min_value)
         self.max_value = float(max_value)
+        self.feature_subtype = feature_subtype
         
 
         # convert integer parents to the corresponding Node object
@@ -49,6 +50,7 @@ class NodeBase(ABC):
             bifurcation_graph._root_nodes.append(self)
         else:
             parent._children.append(self)
+
         
         # set parent
         self._parent = parent
@@ -195,22 +197,21 @@ class NodeBase(ABC):
         "min_value": float(self.min_value),
         "max_value": float(self.max_value),
         "parent": parent_key,
-        "node_type": self.node_type,
         "feature_type": self.feature_type,
+        "feature_subtype": self.feature_subtype,
             }
     
     @classmethod
     def from_dict(cls, bifurcation_graph, node_dict: dict) -> Node:
         # automatic node creation for all inheriting Nodes
-        node_type = node_dict.pop("node_type")
+        node_type = node_dict.pop("feature_type")
         subclass = cls._registry[node_type]
         return subclass(bifurcation_graph=bifurcation_graph, **node_dict)
     
 
 class ReducibleNode(NodeBase):
     
-    node_type = "ReducibleNode"
-    feature_type = "reducible"
+    feature_type = "ReducibleNode"
     is_reducible = True
     
     def __init__(self, **kwargs):
@@ -304,14 +305,15 @@ class ReducibleNode(NodeBase):
             nearest_atom=nearest_atom, 
             nearest_atom_type=nearest_atom_type, 
             atom_distance=atom_distance,
-            feature_type="shallow"
             )
-        node.feature_type = "shallow"
+        node.feature_subtype = "shallow"
+        return node
+
         
     @property
     def plot_label(self) -> str:
         lines = [
-            f"type: {self.feature_type}",
+            f"type: {self.feature_subtype}",
             f"max value: {round(self.max_value, 4)}",
             f"min value: {round(self.min_value, 4)}",
             f"depth: {round(self.depth, 4)}",
@@ -327,8 +329,7 @@ class ReducibleNode(NodeBase):
 class IrreducibleNode(NodeBase):
     
     is_reducible = False
-    node_type = "IrreducibleNode"
-    feature_type = "irreducible" # Should get updated by analyzer eventually
+    feature_type = "IrreducibleNode"
     
     def __init__(
             self,
@@ -338,18 +339,12 @@ class IrreducibleNode(NodeBase):
             nearest_atom: int,
             nearest_atom_type: str,
             atom_distance: float,
-            feature_type: str | None = "irreducible",
-            # irreducible_type: str | None = "point",
             **kwargs,
         ):
         super().__init__(**kwargs)
         
-        # set each instance variable with typing
-        self.feature_type = feature_type
         self.frac_coords = np.array(frac_coords, dtype=np.float64)
-        # self.irreducible_type = irreducible_type
         self.nearest_atom_type = nearest_atom_type
-
         self.charge = float(charge)
         self.volume = float(volume)
         self.nearest_atom = int(nearest_atom)
@@ -358,7 +353,7 @@ class IrreducibleNode(NodeBase):
     @property
     def plot_label(self) -> str:
         lines = [
-            f"type: {self.feature_type}",
+            f"type: {self.feature_subtype}",
             f"depth: {round(self.depth, 4)}",
             f"depth to infinite feature: {round(self.depth_to_infinite, 4)}",
             f"max value: {round(self.max_value, 4)}",
@@ -396,7 +391,6 @@ class IrreducibleNode(NodeBase):
         node_dict["frac_coords"] = [float(i) for i in self.frac_coords]
         # add other attributes
         for attr in [
-            "feature_type",
             "charge",
             "volume",
             "nearest_atom",
