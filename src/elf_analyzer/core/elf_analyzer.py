@@ -4,22 +4,13 @@
 Contains the main class for running elf topology analysis.
 """
 
-# -*- coding: utf-8 -*-
-
 import logging
 import math
-from functools import cached_property
 from pathlib import Path
-import itertools
 from typing import TypeVar
-from rich.progress import track
-import time
-
 import numpy as np
 import plotly.graph_objects as go
 from numpy.typing import NDArray
-from pymatgen.analysis.local_env import CrystalNN
-from pymatgen.core import Structure
 
 from baderkit.core import Grid, Bader
 from baderkit.core.toolkit import Format
@@ -32,7 +23,10 @@ from elf_analyzer.core.bifurcation_graph.feature_mappings import FeatureSubtype
 
 Self = TypeVar("Self", bound="ElfAnalyzer")
 # TODO:
+    # - rework naming convention. Make a clear distinction between domains in
+    # the bifurcation graph vs. assigned features
     # - Update Analyzer to include more convenience methods
+    # - add a method to print a more traditional bifurcation plot
     # - create method to get all radii around each atom using new radii method:
         # 1. get atom neighbors (up to distance or dynamically)
         # 2. find radii for closest and add to official neighbors

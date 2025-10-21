@@ -3,13 +3,10 @@
 import numpy as np
 from numba import njit, prange
 
-from baderkit.core.methods.shared_numba import wrap_point
+from baderkit.core.methods.shared_numba import wrap_point, coords_to_flat
 
-from elf_analyzer.core.bifurcation_graph.infinite_feature_numba import (
-    coords_to_flat,
-    find_root_no_compression,
-    get_connected_features,
-    )
+from elf_analyzer.core.bifurcation_graph.infinite_feature_numba import get_connected_features
+from elf_analyzer.core.utilities.union_find import find_root_no_compression
 
 @njit(cache=True, parallel=True)
 def get_connected_voids(

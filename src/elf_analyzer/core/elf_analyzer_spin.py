@@ -13,7 +13,7 @@ from baderkit.core import Grid, Structure
 import plotly.graph_objects as go
 
 from elf_analyzer.core.elf_analyzer import ElfAnalyzer
-from elf_analyzer.core.utilities import BifurcationGraph
+from elf_analyzer.core.bifurcation_graph import BifurcationGraph
 
 Self = TypeVar("Self", bound="ElfAnalyzer")
 

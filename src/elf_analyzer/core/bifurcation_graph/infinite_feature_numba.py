@@ -4,19 +4,17 @@ import numpy as np
 from numpy.typing import NDArray
 from numba import njit, prange
 
-from baderkit.core.methods.shared_numba import wrap_point
-
-@njit(cache=True, inline="always")
-def union_w_roots(parents, x, y, root_mask):        
-    rx = find_root(parents, x)
-    ry = find_root(parents, y)
-
-    parents[rx] = ry
-    
-    if root_mask[rx]:
-        root_mask[rx] = False
-    if not root_mask[ry]:
-        root_mask[ry] = True
+from baderkit.core.methods.shared_numba import wrap_point, coords_to_flat
+from elf_analyzer.core.utilities.union_find import (
+    union,
+    union_w_roots,
+    union_with_shift,
+    find_root,
+    find_root_no_compression,
+    find_root_with_shift_no_compression,
+    find_root_with_shift,
+    compress_roots,
+    )
 
 @njit(cache=True)
 def trans_to_idx(i, j, k, size):
@@ -24,7 +22,7 @@ def trans_to_idx(i, j, k, size):
     return (i+size)*(val_range**2) + (j+size)*val_range + (k+size)
 
 @njit(cache=True, inline="always")
-def get_box_connections(size):
+def get_connections_in_box(size):
     shifts = []
     lower_connection = []
     upper_connection = []
@@ -60,7 +58,7 @@ def get_box_connections(size):
     return np.array(shifts, dtype=np.int8), connections
 
 @njit(cache=True, inline="always")
-def check_possible_bifurcation(
+def check_if_possible_saddle(
     i,j,k,
     value,
     data,
@@ -111,7 +109,7 @@ def check_possible_bifurcation(
     return maybe_bif
 
 @njit(cache=True, inline="always")
-def check_bifurcation(
+def check_if_saddle(
     i,j,k,
     value,
     data,
@@ -162,7 +160,7 @@ def check_bifurcation(
     return is_bif
 
 @njit(parallel=True, cache=True)
-def find_potential_bifs(
+def find_potential_saddle_points(
     data,
     edge_mask,
     greater=False
@@ -178,8 +176,8 @@ def find_potential_bifs(
     
     # For speed, we map out possible connections for each neighbor. We get
     # neighbor connections for first and second neighbors (3x3x3, 5x5x5)
-    trans3, trans_connections3 = get_box_connections(1)
-    trans5, trans_connections5 = get_box_connections(2)
+    trans3, trans_connections3 = get_connections_in_box(1)
+    trans5, trans_connections5 = get_connections_in_box(2)
 
     # loop over each edge point and find bifurcation voxels
     for i in prange(nx):
@@ -194,7 +192,7 @@ def find_potential_bifs(
                 
                 # do a first check with the nearest neighbors to see if this
                 # has the potential to be a bifurcation
-                if not check_possible_bifurcation(
+                if not check_if_possible_saddle(
                     i, j, k, 
                     value,
                     data, 
@@ -205,7 +203,7 @@ def find_potential_bifs(
                     continue
 
                 # check if point is a potential bifurcation
-                is_bif = check_bifurcation(
+                is_bif = check_if_saddle(
                     i, j, k, 
                     value,
                     data, 
@@ -221,7 +219,7 @@ def find_potential_bifs(
     return bif_mask
 
 @njit(cache=True)
-def find_connections(
+def find_domain_connections(
         basin_labels: NDArray[np.int64],
         data: NDArray[np.float64],
         bif_mask,
@@ -285,153 +283,7 @@ def find_connections(
                     conn_values.append(best_val)
                     
     return np.array(lower_points, dtype=np.int64), np.array(upper_points, dtype=np.int64), np.array(conn_values, dtype=np.float64)
-
-@njit(cache=True)
-def find_root(parent, x):
-    """Find root with partial path compression"""
-    while x != parent[x]:
-        parent[x] = parent[parent[x]]
-        x = parent[x]
-    return x
-
-@njit(cache=True)
-def find_root_no_compression(parent, x):
-    while x != parent[x]:
-        x = parent[x]
-    return x
     
-@njit(cache=True, inline="always")
-def find_root_with_shift(parent, offset_x, offset_y, offset_z, x):
-    """
-    Path-halving find-with-offsets.
-    - parent: int32[:] parent pointers (root has parent[root] == root)
-    - offset_*: int32[:] offsets such that pos(parent[i]) = pos(i) + offset(i)
-    - x: int index
-    Returns: root, cx, cy, cz (cumulative offset from x -> root)
-    """
-    # local aliasing to avoid repeated global lookups
-    y = x
-
-    # Path-halving loop: compress path by setting parent[y] = parent[parent[y]]
-    # and updating offset[y] to remain consistent.
-    # This reduces the path length quickly with fewer writes than full compression.
-    while parent[y] != y and parent[parent[y]] != parent[y]:
-        p = parent[y]
-        # add p's offset into y so that y points to p's parent consistently
-        offset_x[y] += offset_x[p]
-        offset_y[y] += offset_y[p]
-        offset_z[y] += offset_z[p]
-        # set y to point to grandparent
-        parent[y] = parent[p]
-        # advance y (we short-circuited one level)
-        y = parent[y]
-
-    # Final climb to accumulate the cumulative offset; path is now short.
-    cx = 0
-    cy = 0
-    cz = 0
-    y = x
-    while parent[y] != y:
-        cx += offset_x[y]
-        cy += offset_y[y]
-        cz += offset_z[y]
-        y = parent[y]
-
-    return y, cx, cy, cz
-
-@njit(cache=True, inline="always")
-def find_root_with_shift_no_compress(parent, offset_x, offset_y, offset_z, x):
-    cx = 0
-    cy = 0
-    cz = 0
-    while parent[x] != x:
-        cx += offset_x[x]
-        cy += offset_y[x]
-        cz += offset_z[x]
-        x = parent[x]
-
-    return x, cx, cy, cz
-
-@njit(cache=True, inline="always")
-def union(parents, x, y):        
-    rx = find_root(parents, x)
-    ry = find_root(parents, y)
-
-    parents[rx] = ry
-    
-@njit(cache=True, inline="always")
-def union_with_shift(root_mask, parent, offset_x, offset_y, offset_z, size, a, b, si, sj, sk):
-    """
-    Union a and b with periodic shift (si,sj,sk) between them where
-    b is neighbor of a (so the geometric relation between a and b includes shift).
-    Returns (root, cx, cy, cz). If a and b were already connected, returns cycle vector (cx,cy,cz).
-    If merged, returns (new_root, 0,0,0).
-    """
-    ra, ox, oy, oz = find_root_with_shift(parent, offset_x, offset_y, offset_z, a)
-    rb, ox1, oy1, oz1 = find_root_with_shift(parent, offset_x, offset_y, offset_z, b)
-    
-        
-    if ra == rb:
-        # no need to combine
-        return
-    
-    cx = si + ox1 - ox
-    cy = sj + oy1 - oy
-    cz = sk + oz1 - oz
-
-
-    # union-by-size: attach smaller under larger
-    if size[ra] < size[rb]:
-        # attach ra under rb. We must compute offset for ra => rb.
-        # We currently have cx = pos(rb) - pos(ra) (by derivation above),
-        # if we attach ra -> rb then off[ra] = cx (so pos(rb)=pos(ra)+off[ra])
-        parent[ra] = rb
-        offset_x[ra] = cx
-        offset_y[ra] = cy
-        offset_z[ra] = cz
-        size[rb] += size[ra]
-        if not root_mask[rb]:
-            root_mask[rb] = True
-        if root_mask[ra]:
-            root_mask[ra] = False
-
-    else:
-        # attach rb under ra. Then we need off[rb] such that pos(ra) = pos(rb) + off[rb].
-        # Since cx = pos(rb) - pos(ra), off[rb] must be -cx.
-        parent[rb] = ra
-        offset_x[rb] = -cx
-        offset_y[rb] = -cy
-        offset_z[rb] = -cz
-        size[ra] += size[rb]
-        if not root_mask[ra]:
-            root_mask[ra] = True
-        if root_mask[rb]:
-            root_mask[rb] = False
-
-    
-@njit(cache=True, parallel=True, inline="always")
-def compress_roots(parents):
-    new_parents = np.empty_like(parents, dtype=parents.dtype)
-    for i in prange(len(parents)):
-        current_val = parents[i]
-        if current_val == -1:
-            # this basin hasn't been added yet. Note it and continue
-            new_parents[i] = -1
-            continue
-        new_parents[i] = find_root(parents, current_val)
-    return new_parents
-    
-@njit(fastmath=True, inline="always", cache=True)
-def flat_to_coords(idx, ny_nz, nz):
-    i = idx // (ny_nz)
-    j = (idx % (ny_nz)) // nz
-    k = idx % nz
-    return i, j, k
-
-
-@njit(fastmath=True, inline="always", cache=True)
-def coords_to_flat(i, j, k, ny_nz, nz):
-    return i * ny_nz + j * nz + k
 
 @njit(inline="always", cache=True)
 def wrap_point_w_shift(
@@ -472,7 +324,7 @@ def index_to_shift(index):
     return cx, cy, cz
 
 @njit(parallel=True, inline="always")
-def find_cycles(
+def find_periodic_cycles(
         solid, 
         previous_solid,
         old_cycles,
@@ -516,8 +368,8 @@ def find_cycles(
                         continue
                     neigh_idx = coords_to_flat(ni, nj, nk, ny_nz, nz)
 
-                    ra, ox, oy, oz = find_root_with_shift_no_compress(parent, offset_x, offset_y, offset_z, idx)
-                    rb, ox1, oy1, oz1 = find_root_with_shift_no_compress(parent, offset_x, offset_y, offset_z, neigh_idx)
+                    ra, ox, oy, oz = find_root_with_shift_no_compression(parent, offset_x, offset_y, offset_z, idx)
+                    rb, ox1, oy1, oz1 = find_root_with_shift_no_compression(parent, offset_x, offset_y, offset_z, neigh_idx)
 
                     if ra != rb:
                         continue
@@ -617,7 +469,7 @@ def get_connected_features(
     # only take the form (cx, cy, cz) where each value is in -2, -1, 0, 1, 2.
     # This is essentially a base 5 system and we can convert any cycle to one
     # of 125 possible values. Thus we need an array of shape len(roots)x125
-    cycles, roots = find_cycles(
+    cycles, roots = find_periodic_cycles(
         solid=solid, 
         previous_solid=previous_solid,
         old_cycles=cycles,

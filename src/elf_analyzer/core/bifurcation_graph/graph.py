@@ -14,9 +14,9 @@ from elf_analyzer.core.bifurcation_graph.nodes import IrreducibleNode, Reducible
 from elf_analyzer.core.bifurcation_graph.feature_mappings import LINE_COLOR, FeatureSubtype
 # from elf_analyzer.core.utilities import IonicRadiiTools
 from elf_analyzer.core.bifurcation_graph.infinite_feature_numba import (
-    find_connections,
+    find_domain_connections,
     find_bifurcations,
-    find_potential_bifs
+    find_potential_saddle_points
     )
 from elf_analyzer.core.bifurcation_graph.surrounded_atoms_numba import (
     get_features_surrounding_atoms,
@@ -159,14 +159,14 @@ class BifurcationGraph:
         t0 = time.time()
         
         # get mask where potential saddle points connecting features exist
-        bif_mask = find_potential_bifs(
+        bif_mask = find_potential_saddle_points(
             data=reference_grid.total,
             edge_mask=labeler.basin_edges,
             greater=True
             )
         
         # get the basins connected at these points
-        lower_points, upper_points, connection_values = find_connections(
+        lower_points, upper_points, connection_values = find_domain_connections(
             basin_labels=labeler.basin_labels,
             data=reference_grid.total,
             bif_mask=bif_mask,
@@ -227,7 +227,7 @@ class BifurcationGraph:
         logging.info("Finding contained atoms")    
         
         # possible saddle points where voids between features first connect
-        bif_mask = find_potential_bifs(
+        bif_mask = find_potential_saddle_points(
             data=reference_grid.total,
             edge_mask=labeler.basin_edges,
             greater=False

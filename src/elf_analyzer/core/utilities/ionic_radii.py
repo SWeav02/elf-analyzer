@@ -8,7 +8,6 @@ from functools import cached_property
 import numpy as np
 from numpy.typing import NDArray
 from baderkit.core import Structure, Grid
-from baderkit.core.toolkit.grid_numba import Interpolator
 
 from elf_analyzer.core.utilities.ionic_radii_numba import (
     get_nearest_neighbors,
