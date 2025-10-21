@@ -71,11 +71,10 @@ class ElfAnalyzer(Bader):
     def __init__(
         self,
         ignore_low_pseudopotentials: bool = False,
-        shared_shell_ratio: float = 0.5,
+        shared_shell_ratio: float = 1/3,
         combine_shells: bool = True,
         min_covalent_charge: float = 0.6,
         min_covalent_angle: float = 135,
-        min_covalent_bond_ratio: float = 0.8,
         electride_elf_min: float = 0.5,
         electride_depth_min: float = 0.2,
         electride_charge_min: float = 0.5,
@@ -96,7 +95,6 @@ class ElfAnalyzer(Bader):
         self.combine_shells = combine_shells
         self.min_covalent_charge = min_covalent_charge
         self.min_covalent_angle = min_covalent_angle
-        self.min_covalent_bond_ratio = min_covalent_bond_ratio
         self.electride_elf_min = electride_elf_min
         self.electride_depth_min = electride_depth_min
         self.electride_charge_min = electride_charge_min
@@ -172,16 +170,23 @@ class ElfAnalyzer(Bader):
         # to label each node. First, we label cores as they are the simplest
         self._mark_cores()
         
-        # Next, we mark shells
+        # Next, we mark shells. This step distinguishes ionic and covalent
+        # features, the most ambiguous step
         self._mark_shells()
+        
+        # Next we label covalent bonds. These must lie along an atomic bond and
+        # have a reasonably large charge
+        self._mark_covalent()
+        
+        # Next we mark lone pairs. These split off from covalent bonds or rarely
+        # from atomic shells (e.g. SnO)
+        self._mark_lonepairs()
         
         plot = self.bifurcation_graph.get_plot()
         plot.write_html("test1.html")
         breakpoint()
         
-        # Next we label covalent bonds. This step has the most ambiguity as there
-        # is no obvious cutoff between an ionic and covalent bond.
-        self._mark_covalent()
+        
         
         # Now we want to label our valence features as Covalent, Metallic, or bare electron.
         # Many covalent and metallic features are easy to find. Covalent bonds
@@ -302,6 +307,7 @@ class ElfAnalyzer(Bader):
         # the feature fully surrounds the single atom to the highest value where
         # it surrounds at least one other atom
 
+        possible_shells = []
         for node in self.bifurcation_graph.reducible_nodes:
             # skip nodes that don't surround a single atom or have a dimensionality above 0
             if node.is_infinite or len(node.contained_atoms) != 1:
@@ -309,11 +315,35 @@ class ElfAnalyzer(Bader):
             # skip nodes that have children that also contain the single atom
             if any([len(i.contained_atoms) == 1 for i in node.children]):
                 continue
-            # get the highest ELF where this features ancestors contain more than one atom
+            # note this as a possible shell
+            possible_shells.append(node)
+        
+        for node in possible_shells:
+            # we want to find the highest ELF value where these features contribute
+            # to another atoms outer shell. This isn't necessarily the first
+            # parent that contains multiple atoms, as shells/covalent bonds often
+            # connect to each other before surrounding a new atom. We want the
+            # first ancestor that surrounds an atom that would otherwise not
+            # be surrounded without candidate shells/covalent bonds
+            
+            # TODO: This method of finding the point where a shell surrounds a
+            # new atom feels scuffed and I'm probably too tired to be thinking
+            # through it right now. I need to think through it carefully.
+            # set backup
+            highest_neighbor_shell = node.ancestors[-1].max_value
+            
+            included_atoms = node.contained_atoms
             for parent in node.ancestors:
-                if len(parent.contained_atoms) > 1:
+                if len(parent.contained_atoms) == len(included_atoms):
+                    continue
+                # check if all atoms are included in at least one child
+                distinct_atoms = []
+                for child in parent.children:
+                    distinct_atoms.extend(child.contained_atoms)
+                if not all([i in distinct_atoms for i in parent.contained_atoms]):
                     highest_neighbor_shell = parent.max_value
                     break
+                included_atoms = parent.contained_atoms
             # get the highest point where this feature contains the atom
             highest_nearest_shell = node.max_value
             # check if the ratio is below our cutoff
@@ -327,129 +357,7 @@ class ElfAnalyzer(Bader):
                         if not child.is_reducible:
                             child.subtype = "shell"
 
-    
-    def _mark_atomic(self):
-        logging.info("Marking atomic features")
-        elf_data = self.reference_grid.total
-        graph = self.bifurcation_graph
-        
-        # we sometimes assign values for a node during an earlier nodes assignment
-        # so we track that here
-        checked_nodes = []
-        for node in graph:
-            # We are going to use attributes of each irreducible feature to
-            # assign its children, so if this node isn't irreducible we skip it
-            if not node.reducible:
-                continue
-            # If we've already assigned this nodes children in an earlier loop, we
-            # skip
-            if node.key in checked_nodes:
-                continue
-            
-            # There are three situations for our reducible feature. 
-            
-            #### FIRST ####
-            # It contains 0 atoms and all of its children must be valence
-            if len(node.atoms) == 0:
-                for child in node.children:
-                    # skip reducible children
-                    if child.reducible:
-                        continue
-                    # If we haven't already labeled this feature in a previous
-                    # step, mark it as valence
-                    elif not hasattr(child, "basin_subtype"):
-                        child.basin_type = "val"
-                        child.basin_subtype = None
-                continue
-            
-            #### SECOND ####
-            # It contains an infinite number of atoms. Often, this will further
-            # reduce into the third situation, but especially in a pseudopotential
-            # model, an atom may break off into a single irreducible feature. We
-            # can determine this by checking if the feature fully surrounds an atom.
-            
-            elif node.is_infinite:
-                for child in node.children:
-                    # skip any children that are reducible
-                    if child.reducible:
-                        continue
-                    # Using these basins, and the value the basin split at, we
-                    # get a mask for the location of the basin
-                    low_elf_mask = np.isin(self.basin_labels, child.basins) & np.where(
-                        elf_data > node.max_elf, True, False
-                    )
-                    atoms_in_basin = self.reference_grid.get_atoms_in_volume(low_elf_mask)
-                    basin_type = "val"
-                    basin_subtype = None
-                    if len(atoms_in_basin) > 0:
-                        basin_type = "atom"
-                        basin_subtype = "core"
-           
-                    # label this basin
-                    child.basin_type = basin_type
-                    child.basin_subtype = basin_subtype
-                    
-            #### THIRD ####
-            # It contains a finite number of atoms. This indicates an atomic or
-            # molecular feature. The children of this feature can be atomic
-            # such as cores/shells and lone-pairs or (heterogenous) covalent bonds.
 
-            elif len(node.atoms) > 0:
-                # We only label core/shells here and leave lone pairs and covalent
-                # features for later. We do this for all irreducible features
-                # that are part of this feature rather than its closest children,
-                # as they all must conform to this rule
-
-                for child in node.deep_children:
-                    # define our default types
-                    basin_type = "atom"
-                    basin_subtype = None
-                    # If this child is reducible, we note that its children are
-                    # assigned and continue
-                    if child.reducible:
-                        checked_nodes.append(child.key)
-                        continue
-                    # atom shells will usually separate into many features with
-                    # low depths due to their spherical symmetry around the atom.
-                    # However, we can't just use our standard depth as lone-pairs
-                    # can also sometimes split to smaller features with low depth.
-                    # Instead we want the depth from the value where the child 
-                    # appeared to the highest value where it belonged to a feature
-                    # that surrounded at least one atom
-                    
-                    # find the most recent parent/grandparent that contained an
-                    # atom. 
-                    # NOTE: This will always exist as it was the requirement
-                    # for this elif
-                    for ancestor in child.ancestors:
-                        if len(ancestor.atoms) > 0:
-                            # we this ancestor surrounded at least one atom.
-                            basin_shell_depth = child.max_elf - ancestor.max_elf
-                            break
-                    # if our shell depth is low, we have a shell
-                    if basin_shell_depth < self.shell_depth:
-                        basin_subtype = "shell"
-                    # otherwise, it could be a core, lone-pair, or covalent bond
-                    else:
-                        # A core will contain an atom
-                        low_elf_mask = np.isin(self.basin_labels, child.basins) & np.where(
-                            elf_data > child.parent.max_elf, True, False
-                        )
-                        atoms_in_basin = self.reference_grid.get_atoms_in_volume(low_elf_mask)
-                        
-                        if len(atoms_in_basin) == 1: # used to be > 0. Any reason?
-                            # We have a core region
-                            basin_subtype = "core"
-                        else:
-                            # otherwise its a lone pair or covalent bond
-                            basin_type = "val"
-                            basin_subtype = "other"
-
-                    # Now we assign our types to the child node.
-                    child.basin_type = basin_type
-                    child.basin_subtype = basin_subtype
-
-        return graph
     
     def _mark_covalent(self):
         """
@@ -460,34 +368,92 @@ class ElfAnalyzer(Bader):
         graph = self.bifurcation_graph
         
         # get frac coords of unassigned nodes
+        valence_nodes = []
         valence_frac = []
-        for node in graph.unassigned_irreducible_nodes:
-            valence_frac.append(node.frac_coords)
+        for node in graph.unassigned_nodes:
+            # don't include nodes with too low of charge (avoids shallow metallics)
+            if node.charge > self.min_covalent_charge:
+                valence_frac.append(node.frac_coords)
+                valence_nodes.append(node)
         
         # Convert our cutoff angle to radians
         min_covalent_angle = self.min_covalent_angle * math.pi / 180
         
-        # get our atom frac coords and atomic radii
+        # get our atom frac coords
         atom_frac_coords = self.structure.frac_coords
         atom_cart_coords = self.structure.cart_coords
-        atom_radii = [i.specie.atomic_radius for i in self.structure]
 
+        # check which nodes are within our tolerance
         # if/then is to avoid numba disliking empty lists
         if len(valence_frac) > 0:
-            covalent_nodes = check_all_covalent(
+            nodes_in_tolerance, atom_neighs = check_all_covalent(
                 valence_frac, 
                 atom_frac_coords, 
                 atom_cart_coords, 
-                atom_radii,
                 frac2cart=self.structure.lattice.matrix, 
                 min_covalent_angle=min_covalent_angle,
                 )
         else:
-            covalent_nodes = []
+            nodes_in_tolerance = []
+            
+        for node, in_tolerance, (atom0, atom1) in zip(valence_nodes, nodes_in_tolerance, atom_neighs):
+            # skip nodes that aren't within our angle tolerance
+            if not in_tolerance:
+                continue
+            
+            # set backup
+            contained_atoms = node.ancestors[-1].contained_atoms
+            if atom0 in contained_atoms and atom1 in contained_atoms:
+                is_covalent = True
+            else:
+                is_covalent = False
+            
+            # Sometimes a lone pair happens to align well with an atom that
+            # is not part of our covalent system (e.g. CaC2). We can easily 
+            # check for this by seeing if our atoms both belong to the parent
+            # containing the full molecule
+            included_atoms = node.contained_atoms
+            for parent in node.ancestors:
+                if len(parent.contained_atoms) == len(included_atoms) or len(parent.contained_atoms <= 1):
+                    continue
+                # check if all atoms are included in at least one child
+                distinct_atoms = []
+                for child in parent.children:
+                    distinct_atoms.extend(child.contained_atoms)
+                if not all([i in distinct_atoms for i in parent.contained_atoms]):
+                    if atom0 in parent.contained_atoms and atom1 in parent.contained_atoms:
+                        is_covalent = True
+                    else:
+                        is_covalent = False
+                    break
+                included_atoms = parent.contained_atoms
 
-        for node, covalent in zip(graph.unassigned_irreducible_nodes, covalent_nodes):
-            if covalent:
-                node.feature_type = "covalent"
+            if is_covalent:
+                node.feature_subtype = "covalent"
+                
+    def _mark_lonepairs(self):
+        # lone-pairs separate off from covalent bonds or rarely from an ionic
+        # core/shell.
+        
+        for node in self.bifurcation_graph.unassigned_nodes:
+            # get the first parent with an atom
+            for parent in node.ancestors:
+                if len(parent.contained_atoms) > 0:
+                    break
+            # now check if all the children of this parent are covalent or atomic
+            all_covalent = True
+            all_atomic = True
+            for child in parent.deep_children:
+                if child.is_reducible:
+                    continue
+                if not child.feature_subtype in ["covalent", "lone-pair", None]:
+                    all_covalent = False
+                if not child.feature_subtype in ["core", "shell", None]:
+                    all_atomic = False
+            if all_covalent or (node.charge > self.min_covalent_charge and all_atomic):
+                node.feature_subtype = "lone-pair"
+
+            
     
     def _mark_covalent_lonepair(self):
         """
