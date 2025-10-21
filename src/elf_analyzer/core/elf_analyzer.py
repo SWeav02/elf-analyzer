@@ -186,32 +186,9 @@ class ElfAnalyzer(Bader):
         plot.write_html("test1.html")
         breakpoint()
         
-        
-        
-        # Now we want to label our valence features as Covalent, Metallic, or bare electron.
-        # Many covalent and metallic features are easy to find. Covalent bonds
-        # are typically exactly along a bond between an atom and its nearest
-        # neighbors. Metallic features have a low depth. We mark these first
-        self._mark_covalent_lonepair()
-        
-        # Now that we have a sense of which features are covalent/lone-pairs
-        # we want to correct for a few possible errors in our assignments.
-        # Sometimes if we've set our shell depth too low we will end up with only
-        # "lone-pairs" surrounding an atom. We relabel these as shells.
-        self._correct_for_high_depth_shells()
-        
-        # Sometimes a metallic/bare electron will detatch from an atomic basin
-        # rather than a valence domain. These will be misassigned as shells. We
-        # correct for these here by looking for shell basins outside the atoms
-        # radius. We need to run a new bader with the labeled structure for this
-        # so we also take advantage of the moment to assign radii to the features
-        # Note we don't use downscaled grid here
-        self._get_atomic_radii()
-        self._correct_far_shell_features()
-        
-        # Reduce any related shell basins to a single basin for clarity
-        if self.combine_shells:
-            self._reduce_atomic_shells()
+        # TODO: Decide on whether to mark metallic vs. bare
+        # Decide how to add additional features for metallic/bare
+        # Find a better way to get nearest neighbors
         
         # Now we want to mark the radius of each feature. We don't use the
         # downscaled grid here to get the best chance at a reasonable radius
@@ -221,12 +198,6 @@ class ElfAnalyzer(Bader):
         # is used just to give a sense of how bare an electron is vs. a more common
         # metallic feature.
         self._mark_bare_electron_indicator()
-        
-        # Sometimes a bare electron or metal feature will be mislabeled due to it
-        # being nearly between two atoms. In these cases, the features are very
-        # far outside the atoms radius, while a covalent bond never is. We relabel them
-        # here.
-        self._correct_far_covalent_features()
         
         # Finally, we want to distinguish between a metal and a bare electron.
         # This is currently very arbitrary and based on a series of cutoffs.
@@ -432,6 +403,7 @@ class ElfAnalyzer(Bader):
                 node.feature_subtype = "covalent"
                 
     def _mark_lonepairs(self):
+        logging.info("Marking lone-pair features")
         # lone-pairs separate off from covalent bonds or rarely from an ionic
         # core/shell.
         
@@ -452,339 +424,6 @@ class ElfAnalyzer(Bader):
                     all_atomic = False
             if all_covalent or (node.charge > self.min_covalent_charge and all_atomic):
                 node.feature_subtype = "lone-pair"
-
-            
-    
-    def _mark_covalent_lonepair(self):
-        """
-        Takes in a bifurcation graph and labels valence features that
-        are obviously metallic or covalent
-        """
-        logging.info("Marking covalent features")
-        graph = self.bifurcation_graph
-        
-        # Make a first pass to collect nodes that might be covalent. We do
-        # this so that the more expensive operation can be done in parallel
-        # with numba
-        valence_nodes = []
-        valence_frac = []
-        for node in graph:
-            if node.reducible or getattr(node, "basin_type") != "val":
-                continue
-            # check if we are under our charge tolerance
-            if node.charge < self.min_covalent_charge:
-                # this isn't a covalent feature. If we previously noted our
-                # subtype as "other" this feature is part of an atom/molecule
-                # and must be a lone pair. Otherwise, its a bare electron or metal bond
-                if node.basin_subtype == "other":
-                    node.basin_subtype = "lone-pair"
-                else:
-                    node.basin_subtype = "bare electron"
-                continue
-            # otherwise, we want to investigate the position relative to nearby
-            # neighbors
-            valence_nodes.append(node)
-            valence_frac.append(node.frac_coords)
-        
-        # Now get which of the remaining nodes are covalent
-        # convert bond angle cutoff to radians
-        min_covalent_angle = self.min_covalent_angle * math.pi / 180
-        atom_frac_coords = self.structure.frac_coords
-        atom_cart_coords = self.structure.cart_coords
-        if len(valence_frac) > 0:
-            covalent_nodes = check_all_covalent(
-                valence_frac, 
-                atom_frac_coords, 
-                atom_cart_coords, 
-                frac2cart=self.structure.lattice.matrix, 
-                min_covalent_bond_ratio=self.min_covalent_bond_ratio, 
-                min_covalent_angle=min_covalent_angle,
-                )
-        else:
-            covalent_nodes = []
-
-        for node, covalent in zip(valence_nodes, covalent_nodes):
-            if covalent:
-                node.basin_subtype = "covalent"
-            else:
-                if node.basin_subtype == "other":
-                    node.basin_subtype = "lone-pair"
-                else:
-                    node.basin_subtype = "bare electron"
-        
-        
-
-        # !!! I'm not sure if the following code is really necessary
-        # # There is an exception to the lone-pair rule that can result in missing
-        # # a lone-pair assignment. If a covalent/lone-pair feature surrounds two atoms
-        # # these features won't be assigned as "other".
-        # # This happens in CaC2 around the C2 molecules for example. The covalent
-        # # bonds are labeled in the loop above, but the lone-pair will
-        # # still be labeled as a bare electron. We correct for this in an
-        # # additional loop by checking for bare electrons that are siblings with
-        # # covalent bonds.
-        # # BUG-FIX rather than exact siblings, we want all of the features that
-        # # are children of the parent domain that fully surrounds the molecule
-        # # TODO: This could be moved to a Node property
-        # def get_molecule_parent(node):
-        #     # get parent that fully surrounds at least one atom
-        #     molecule_parent = None
-        #     parent = node.parent
-        #     while molecule_parent is None:
-        #         if len(parent.atoms) != 0:
-        #             molecule_parent = parent
-        #         else:
-        #             parent = parent.parent
-        #     return molecule_parent
-        
-        # # keep track of nodes to reassign as lone-pairs. We can't reassign them
-        # # in this loop because we check that at least one sibling is a covalent
-        # # bond, and we don't want to accidentally relabel them.
-        # nodes_to_relabel = []
-        # for node in graph:
-        #     if node.reducible or getattr(node, "basin_type") != "val":
-        #         continue
-        #     if node.basin_subtype == "bare electron":
-
-        #         all_cov_lp_be = True
-        #         at_least_one_cov = False
-        #         molecule_parent = get_molecule_parent(node)
-
-        #         # Check if all siblings are covalent, bare electrons, or lone-pairs. If so,
-        #         # this is a lone-pair
-        #         for sibling in molecule_parent.deep_children:
-        #             # skip reducible siblings
-        #             if sibling.reducible:
-        #                 continue
-        #             # make sure this sibling isn't the child of a different submolecule
-        #             direct_parent = get_molecule_parent(sibling)
-        #             if len(direct_parent.atoms) != 0 and direct_parent != molecule_parent:
-        #                 continue
-
-        #             # We need to make sure there's at least one covalent bond as well
-        #             if sibling.basin_subtype == "covalent":
-        #                 at_least_one_cov = True
-        #             elif sibling.basin_subtype not in [
-        #                 "bare electron",
-        #                 "covalent",
-        #                 "lone-pair",
-        #             ]:
-        #                 all_cov_lp_be = False
-        #         if all_cov_lp_be and at_least_one_cov:
-        #             nodes_to_relabel.append(node)
-        # for node in nodes_to_relabel:
-        #     node.basin_subtype = "lone-pair"
-            
-    def _correct_for_high_depth_shells(self):
-        """
-        Sometimes atomic shells have particularly deep separations, for
-        example when they are heavily polarized (e.g. Er2C). In these
-        cases, the shell will split into one irreducible domain and
-        one or more reducible domains. This is similar to a covalent bond/
-        lone-pair shell. However, none of the domains will fit the criteria
-        for a covalent bond, so all of them will be marked as shells or
-        lone-pairs. We change all of them to be marked as shells here.
-        """
-        graph = self.bifurcation_graph
-        
-        for node in graph:
-            if not node.reducible:
-                continue
-            # We check only for situations where we have a finite number of
-            # atoms in a reducible region
-            if len(node.atoms) > 0 and not node.is_infinite:
-                all_lone_pairs_or_shells = True
-                for child in node.deep_children:
-                    # skip reducible domains
-                    if child.reducible:
-                        continue
-
-                    # check if the child is not a lone pair or shell
-                    if child.basin_subtype not in ["lone-pair", "shell"]:
-                        all_lone_pairs_or_shells = False
-                        break
-                if not all_lone_pairs_or_shells:
-                    # This reducible domain isn't a shell. Continue
-                    continue
-
-                for child in node.deep_children:
-                    # skip reducible domains
-                    if child.reducible:
-                        continue
-                    child.basin_type = "atom"
-                    child.basin_subtype = "shell"
-
-        return graph
-    
-    def _correct_far_shell_features(self):
-        """
-        Corrects any 'shell' nodes that are outside the radius of the atom
-        to be considered bare electrons instead
-        """
-        
-        for node in self.bifurcation_graph:
-            if node.reducible or getattr(node, "basin_subtype") != "shell":
-                continue
-            atom = node.nearest_atom
-            atom_radius = self.atomic_radii[atom]
-            distance = node.atom_distance
-            tolerance = 0.0
-            if distance > atom_radius + tolerance:
-                # This shouldn't be considered a shell basin and we relabel it
-                # We also need to find the radius of this feature to match what we
-                # had before
-                node.basin_type = "val"
-                node.basin_subtype = "bare electron"
-
-    def _combine_shells(self, nodes: list) -> BifurcationGraph():
-        """
-        Combines a list of nodes into one
-        """
-        # Get the new values for each feature of this node
-        basins = []
-        atom_distance = 50
-        volume = 0
-        charge = 0
-        max_elf = 0
-        min_elf = 50
-        nearest_atom = -1
-        nearest_atom_type = None
-        frac_coords = None
-        # update all of our shell characteristics
-        for child in nodes:
-            # update atom distance if better than other children
-            if child.atom_distance < atom_distance:
-                atom_distance = child.atom_distance
-                nearest_atom = child.nearest_atom
-                nearest_atom_type = child.nearest_atom_type
-            
-            # add basins to our list
-            basins.extend(child.basins)
-            
-            # add volume and charge to our total
-            volume += child.volume
-            charge += child.charge
-            
-            # update the value the feature disappears at if its
-            # greater.
-            if child.max_elf > max_elf:
-                max_elf = child.max_elf
-                try:
-                    frac_coords = child.frac_coords
-                except:
-                    breakpoint()
-            
-            # update the value the feature appears at if lower. This
-            # should get overwritten if we delete the parent node
-            # anyways
-            if child.min_elf < min_elf:
-                min_elf = child.min_elf
-
-        # Add the attributes
-        node = nodes[0]
-        node.basin_type = "atom"
-        node.basin_subtype = "shell"
-        node.basins = np.array(basins)
-        node.atom_distance = atom_distance
-        node.volume = volume
-        node.charge = charge
-        node.min_elf = min_elf
-        node.max_elf = max_elf
-        node.nearest_atom = nearest_atom
-        node.nearest_atom_type = nearest_atom_type
-        node.frac_coords = frac_coords
-        
-        # Recalculate depth
-        node.depth = node.max_elf - node.min_elf
-        node.depth_to_infinite = self._get_depth_to_infinite(node)
-
-        children_to_remove = nodes[1:]
-        # delete all of the unused nodes
-        for child in children_to_remove:
-            child.remove()
-
-    def _reduce_atomic_shells(self):
-        """
-        Reduces shell nodes to a single node
-        """
-        logging.info("Reducing shell features")
-        graph = self.bifurcation_graph
-        # We want to combine any nodes that belong to the same atomic shell. We
-        # can do this by confirming that they share 2 aspects: The same closest
-        # atom and a similar distance to the atom. To do this, we create a dictionary
-        # to store these two attributes and the associated shells
-        shell_groups = {}
-        reducible_nodes = []
-        group_num = 0
-        for node in graph:
-            if node.reducible:
-                reducible_nodes.append(node)
-                continue
-            if getattr(node, "basin_subtype") != "shell":
-                continue
-            # First we get the shells nearest atom and distance
-            atom = node.nearest_atom
-            dist = node.atom_distance
-            # Now we compare to all of our dictionary items
-            assigned_group = None
-            for shell_group, values in shell_groups.items():
-                group_atom = values["atom"]
-                dist_diff = values["dists"] - dist
-                # We calculate a percent difference since shells close to the
-                # core can be very close together. This likely doesn't matter
-                # for a PP model anyways.
-                percent_dist_diff = dist_diff / dist
-                if group_atom == atom and percent_dist_diff.max() < 0.2:
-                    assigned_group = shell_group
-                    break
-            if assigned_group is not None:
-                dists = shell_groups[assigned_group]["dists"]
-                dists = np.insert(dists,len(dists),dist)
-                shell_groups[assigned_group]["dists"] = dists
-                shell_groups[assigned_group]["nodes"].append(node)
-            else:
-                shell_groups[group_num] = {
-                    "atom" : atom,
-                    "dists" : np.array([dist]),
-                    "nodes" : [node],
-                    }
-                group_num += 1
-
-        # Now we want to go through and combine all of the shells we just grouped
-        for group, values in shell_groups.items():
-            nodes = values["nodes"]
-            self._combine_shells(nodes)
-        
-        # Now that we've done that, there may be some nodes that were parents
-        # of these shells that are either empty or a parent to one newly grouped
-        # shell. We loop over the potential parents backwards, deleting any that
-        # have no children and replacing any that have only one child
-        reducible_nodes.reverse()
-        for parent in reducible_nodes:
-            children = parent.children
-            child_num = len(children)
-            if child_num == 0:
-                # This is an empty node and we just delete it.
-                parent.remove()
-            elif child_num == 1:
-                # This node is now the parent of a single shell feature. We replace
-                # it.
-                child = children[0]
-                # BUG-FIX: assign the value this parent appears at to the
-                # child and recalculate depth
-                child.min_elf = parent.min_elf
-                new_depth = child.max_elf - child.min_elf
-                child.depth = new_depth                
-                
-                child.reducible = True # We will need to check for this later
-                # BUG-FIX: assign the child the atoms in the parent
-                child.atoms = parent.atoms
-                child.is_infinite = parent.is_infinite
-                child.dimensionality = parent.dimensionality
-                # delete the parent
-                parent.remove()
-                # recalculate depth 3d
-                child.depth_to_infinite = self._get_depth_to_infinite(node)
 
     
     def _mark_feature_radii(self):
@@ -953,21 +592,6 @@ class ElfAnalyzer(Bader):
             node.atom_distance = atom_distance
             node.nearest_atom = nearest_atom_idx
             node.nearest_atom_type = nearest_atom_species
-            
-
-    def _correct_far_covalent_features(self):
-        # BUG-FIX On occasion, a metal feature will sit very close to being along
-        # an atom-atom bond, but will sit well outside that atoms ELF radius. In
-        # these cases they will be mislabeled as covalent. We correct for that here
-        # skip atomic and reducible features
-        for node in self.bifurcation_graph:
-            if node.reducible or getattr(node, "basin_type") != "val":
-                continue
-            dist_beyond_atom = node.dist_beyond_atom
-            feature_subtype = node.basin_subtype
-            if dist_beyond_atom > 0.2 and feature_subtype in ["covalent", "lone-pair"]:
-                breakpoint()
-                node.basin_subtype = "bare electron"
     
     def _mark_metallic_or_electride(self):
         logging.info("Marking metallic and bare electron features")
@@ -993,7 +617,6 @@ class ElfAnalyzer(Bader):
                     node.depth_to_infinite,  # Note we use the depth to an infinite connection rather than true depth
                     node.charge,
                     node.volume,
-                    # attributes["feature_radius"],
                     node.dist_beyond_atom
                 ]
             )
@@ -1124,79 +747,7 @@ class ElfAnalyzer(Bader):
             )
         self._atomic_radii = radii_tools.atomic_radii
     
-    # @staticmethod
-    # def _get_shared_feature_neighbors(structure: Structure) -> NDArray:
-    #     """
-    #     For each covalent bond or metallic feature in a dummy atom labeled
-    #     structure, returns a list of nearest atom neighbors.
-    #     """
-    #     # We want to get the atoms and electride sites that are closest to each
-    #     # shared feature. However, we don't want to find any nearby shared features
-    #     # as neighbors.
-    #     # To do this we will remove all of the shared dummy atoms, and create
-    #     # temporary structures with only one of the shared dummy atoms at a time.
-    #     shared_feature_indices = []
-    #     cleaned_structure = structure.copy()
-    #     for symbol in ["Z", "M", "Le", "Lp"]:
-    #         if not symbol in cleaned_structure.symbol_set:
-    #             continue
-    #         cleaned_structure.remove_species([symbol])
-    #         shared_feature_indices.extend(structure.indices_from_symbol(symbol))
-    #     shared_feature_indices = np.array(shared_feature_indices)
-    #     shared_feature_indices.sort()
-    #     # We will be using the indices of the cleaned structure to note neighbors,
-    #     # so these must match the original structure. We assert that here
-    #     assert all(
-    #         cleaned_structure[i].species == structure[i].species
-    #         for i in range(len(cleaned_structure))
-    #     ), "Provided structure must list atoms and electride dummy atoms first"
-
-    #     # Replace any electrides with "He" so that CrystalNN doesn't throw an error
-    #     if "E" in cleaned_structure.symbol_set:
-    #         cleaned_structure.replace_species({"E": "He"})
-    #     # for each index, we append a dummy atom ("He" because its relatively small)
-    #     # then get the nearest neighbors
-    #     cnn = CrystalNN(distance_cutoffs=None)
-    #     all_neighbors = []
-    #     for idx in shared_feature_indices:
-    #         neigh_indices = []
-    #         # Add this dummy atom to the temporary structure
-    #         frac_coords = structure[idx].frac_coords
-    #         feature_structure = cleaned_structure.copy()
-    #         feature_structure.append("He", frac_coords)
-    #         # Get the nearest neighbors to this dummy atom
-    #         nn = cnn.get_nn(feature_structure, -1)
-    #         # Get the index for each neighboras a list, then append this list
-    #         # to our full list. Note that it is important that these indices be
-    #         # the same as in the original structure, so atoms and electrides must
-    #         # come before shared electrons in the provided structure.
-    #         for n in nn:
-    #             neigh_indices.append(n.index)
-    #         all_neighbors.append(neigh_indices)
-    #     return all_neighbors
-
-    # def _get_atom_en_diff_and_cn(self, site: int) -> list([float, int]):
-    #     """
-    #     Uses the coordination environment of an atom to get the EN diff
-    #     between it and it's neighbors as well as its coordination number.
-    #     This is useful for guessing which radius to use.
-    #     """
-    #     # get the neighbors for this site and its electronegativity
-    #     neigh_list = self.atom_coordination_envs[site]
-    #     site_en = self.structure.species[site].X
-    #     # create a variable for storing the largest EN difference
-    #     max_en_diff = 0
-    #     for neigh_dict in neigh_list:
-    #         # get the EN for each neighbor and calculate the difference
-    #         neigh_site = neigh_dict["site_index"]
-    #         neigh_en = self.structure.species[neigh_site].X
-    #         en_diff = site_en - neigh_en
-    #         # if the difference is larger than the current stored one, replace
-    #         # it.
-    #         if abs(en_diff) > max_en_diff:
-    #             max_en_diff = en_diff
-    #     # return the en difference and number of neighbors
-    #     return max_en_diff, len(neigh_list)
+    
     ###########################################################################
     # Read methods
     ###########################################################################
