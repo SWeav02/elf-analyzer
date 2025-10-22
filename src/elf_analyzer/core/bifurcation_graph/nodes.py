@@ -198,6 +198,9 @@ class NodeBase(ABC):
             value = getattr(self, attr, None)
             if value is None:
                 continue
+            if tag == "type":
+                lines.append(f"{tag}: {value.value}".title())
+                continue
             if isinstance(value, (float, np.floating)):
                 value = round(value, 4)
             lines.append(f"{tag}: {value}".title())
@@ -344,7 +347,7 @@ class IrreducibleNode(NodeBase):
         "volume" : "volume",
         "depth to infinite feature" : "depth_to_infinite",
         "atom distance" : "atom_distance",
-        "nearest atom index" : "nearest_atom_index",
+        "nearest atom index" : "nearest_atom",
         "nearest atom species" : "nearest_atom_species",
         "minimum surface dist" : "min_surface_dist",
         "average surface dist" : "avg_surface_dist",

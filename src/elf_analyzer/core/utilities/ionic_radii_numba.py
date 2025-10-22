@@ -19,7 +19,7 @@ def get_nearest_neighbors(
     best_dists = np.full(len(atom_frac_coords), 100.0, dtype=np.float64)
     best_neighs = np.empty(len(atom_frac_coords), dtype=np.int64)
     best_images = np.empty((len(atom_frac_coords), 3), dtype=np.int64)
-    
+
     # loop over each fractional coordinate. Transform it to neighboring
     # cells. Check distance to each neighbor.
     for i in prange(len(atom_frac_coords)):
@@ -39,7 +39,7 @@ def get_nearest_neighbors(
                     # compare distance to each neighbor
                     for j, (nci, ncj, nck) in enumerate(atom_cart_coords):
                         # skip if this is the current coord
-                        if j == i:
+                        if j == i and si==0 and sj==0 and sk==0:
                             continue
                         # otherwise, calculate the distance
                         dist = ((nci-ci)**2 + (ncj-cj)**2 + (nck-ck)**2) ** 0.5
@@ -222,7 +222,7 @@ def get_ionic_radii(
         neigh_idx = neighbor_indices[atom_idx]
         bond_dist = neighbor_dists[atom_idx]
         neigh_image = neighbor_images[atom_idx]
-    
+        
         # get the neighbors frac coords
         neigh_coords = atom_frac_coords[neigh_idx] + neigh_image
         

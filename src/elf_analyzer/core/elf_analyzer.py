@@ -133,7 +133,7 @@ class ElfAnalyzer(Bader):
         # Now we have a graph with information associated with each basin. We want
         # to label each node. First, we label cores as they are the simplest
         self._mark_cores()
-        
+
         # Next, we mark shells. This step distinguishes ionic and covalent
         # features, the most ambiguous step
         self._mark_shells()
@@ -150,10 +150,7 @@ class ElfAnalyzer(Bader):
         # of rather arbitrary cutoffs to distinguish between them. In the future
         # I would like to perform a comprehensive study.
         self._mark_metallic()
-        
-        plot = self.bifurcation_graph.get_plot()
-        plot.write_html("test1.html")
-        
+
         # In some cases, the user may not have used a pseudopotential with enough core electrons.
         # This can result in an atom having no assigned core/shell, which will
         # result in nonsense later. We check for this here and throw an error
@@ -214,7 +211,7 @@ class ElfAnalyzer(Bader):
         # the feature fully surrounds the single atom to the highest value where
         # it surrounds at least one other atom
 
-        possible_shells = []
+        shell_nodes = []
         for node in self.bifurcation_graph.reducible_nodes:
             # skip nodes that don't surround a single atom or have a dimensionality above 0
             if node.is_infinite or len(node.contained_atoms) != 1:
@@ -222,10 +219,7 @@ class ElfAnalyzer(Bader):
             # skip nodes that have children that also contain the single atom
             if any([len(i.contained_atoms) == 1 for i in node.children]):
                 continue
-            # note this as a possible shell
-            possible_shells.append(node)
-        
-        for node in possible_shells:
+
             # we want to find the highest ELF value where these features contribute
             # to another atoms outer shell. This isn't always the first
             # parent that contains multiple atoms, as shells and heterogenous 
@@ -233,8 +227,7 @@ class ElfAnalyzer(Bader):
             # a different atom. Instead we want the first ancestor that surrounds
             # a new atom without being in contact with that atoms shells/core
 
-            highest_neighbor_shell = node.ancestors[-1].max_value
-            
+            found_parent = False            
             included_atoms = node.contained_atoms
             for parent in node.ancestors:
                 if len(parent.contained_atoms) == len(included_atoms):
@@ -245,20 +238,29 @@ class ElfAnalyzer(Bader):
                     distinct_atoms.extend(child.contained_atoms)
                 if not all([i in distinct_atoms for i in parent.contained_atoms]):
                     highest_neighbor_shell = parent.max_value
+                    found_parent = True
                     break
                 included_atoms = parent.contained_atoms
+            
+            if not found_parent:
+                # There is no appropriate parent and this must be a shell
+                shell_nodes.append(node)
+                continue
             # get the highest point where this feature contains the atom
             highest_nearest_shell = node.max_value
             # check if the ratio is below our cutoff
             if (highest_neighbor_shell / highest_nearest_shell) < self.shared_shell_ratio:
-                if self.combine_shells:
-                    # convert to an irreducible node
-                    node = node.make_irreducible()
-                    node.feature_subtype = "shell"
-                else:
-                    for child in node.deep_children:
-                        if not child.is_reducible:
-                            child.subtype = "shell"
+                shell_nodes.append(node)
+                
+        for node in shell_nodes:
+            if self.combine_shells:
+                # convert to an irreducible node
+                node = node.make_irreducible()
+                node.feature_subtype = "shell"
+            else:
+                for child in node.deep_children:
+                    if not child.is_reducible:
+                        child.subtype = "shell"
     
     def _mark_covalent(self):
         """
@@ -297,6 +299,7 @@ class ElfAnalyzer(Bader):
         else:
             nodes_in_tolerance, atom_neighs = [], []
             
+        # breakpoint()
         for node, in_tolerance, (atom0, atom1) in zip(valence_nodes, nodes_in_tolerance, atom_neighs):
             # skip nodes that aren't within our angle tolerance
             if not in_tolerance:
@@ -347,11 +350,16 @@ class ElfAnalyzer(Bader):
             for parent in node.ancestors:
                 if len(parent.contained_atoms) > 0:
                     break
-            # now check if all the children of this parent are covalent or atomic
+            # if we reached the root, this is not a lone pair
+            if parent.feature_subtype == "root":
+                continue
+
+            # track if all the children of this parent are covalent or atomic
             all_covalent = True
             all_atomic = True
-            # also check that there is at least one of these. If not, this is
-            # a misassigned set of shells
+            # also track that there is at least one of these. If not, this is
+            # a misassigned set of shells (Really that shouldn't happen if everything
+            # is working as expected)
             any_covalent = False
             any_atomic = False
             for child in parent.deep_children:
@@ -360,19 +368,27 @@ class ElfAnalyzer(Bader):
                 
                 if child.feature_subtype in ["covalent"]:
                     any_covalent = True
-                elif child.feature_subtype in ["core", "shell"]:
-                    any_atomic = True
-                    
-                if not child.feature_subtype in ["covalent", "lone-pair", None]:
-                    all_covalent = False
-                if not child.feature_subtype in ["core", "shell", None]:
                     all_atomic = False
+                elif child.feature_subtype in ["core", "shell", "deep shell"]:
+                    any_atomic = True
+                    all_covalent = False
             
             if not any_covalent and not any_atomic:
                 # This is a deep_shell instead
                 node.feature_subtype = "deep shell"
-                
-            if all_covalent or (node.charge > self.min_covalent_charge and all_atomic):
+            
+            # if everything is a covalent bond or not assigned, this is a lone pair
+            if all_covalent:
+                node.feature_subtype = "lone-pair"
+            # otherwise, if all features are atomic we might have a lone-pair but
+            # with a few restrictions. It must have reasonably large charge and the
+            # parent must surround exactly 1 atom (not be infinite)
+            elif (
+                    all_atomic
+                    and not parent.is_infinite
+                    and len(parent.contained_atoms) == 1
+                    and node.charge > self.min_covalent_charge 
+                    ):
                 node.feature_subtype = "lone-pair"
 
     def _mark_metallic(self):
@@ -485,15 +501,14 @@ class ElfAnalyzer(Bader):
         
         # recalculate the atoms for our bader object
         _,_, feature_labels = self.assign_basins_to_structure(feature_structure)
-        
+
         radii_tools = IonicRadiiTools(
             grid=self.reference_grid,
             feature_labels=feature_labels,
             feature_structure=feature_structure,
             )
         self._atomic_radii = radii_tools.atomic_radii
-    
-    
+
     ###########################################################################
     # Read methods
     ###########################################################################

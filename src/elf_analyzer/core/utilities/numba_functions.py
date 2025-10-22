@@ -15,11 +15,14 @@ def check_covalent(
     frac2cart,
     min_covalent_angle,
         ):
-    
+    num_atoms = len(atom_cart_coords)
     # first we find the two closest neighbors to this point
     # create arrays to store distances and vectors
-    atom_dists = np.full(len(atom_cart_coords), 1e6, dtype=np.float64)
-    atom_vecs = np.empty((len(atom_cart_coords), 3), dtype=np.float64)
+    # BUGFIX: Its possible for the closest and second closest neighbor to be
+    # the same atom. We need to store the closest and second closest image of
+    # each atom (e.g. single atom systems)
+    atom_dists = np.full(num_atoms*2, 1e6, dtype=np.float64)
+    atom_vecs = np.empty((num_atoms*2, 3), dtype=np.float64)
     
     # transform the coord to each neighboring unit cell (and the current cell)
     fi, fj, fk = feature_frac_coord
@@ -41,14 +44,28 @@ def check_covalent(
                     dist = ((di)**2 + (dj)**2 + (dk)**2) ** 0.5
                     # if its lower than previous calculated distances, update
                     # our entry
-                    if dist < atom_dists[i]:
+                    if dist <= atom_dists[i]:
+                        # set the previous value to be the second nearest
+                        atom_dists[i+num_atoms] = atom_dists[i]
+                        atom_vecs[i+num_atoms] = atom_vecs[i]
+                        # update the nearest value
                         atom_dists[i] = dist
                         atom_vecs[i] = (di, dj, dk)
 
-    # Get the nearest and second nearest atoms
+    # sort atoms
     sorted_atoms = np.argsort(atom_dists)
+    
+    # Get the nearest and second nearest atoms
     nearest_atom = sorted_atoms[0]
     neighbor_atom = sorted_atoms[1]
+    
+    # Bug Fix: We must only have 2 nearest neighbors or this is more like a
+    # non-nuclear attractor. We make sure we don't have a third neighbor
+    neigh_dist = atom_dists[1]
+    next_neigh_dist = atom_dists[2]
+    # check if next neighbor is within 1% of the distance
+    if (next_neigh_dist - neigh_dist) / neigh_dist < 0.01:
+        return False, nearest_atom, neighbor_atom
     
     # First we check that we are reasonably close to being along this bond. We
     # do this by checking the angle between the neighboring atoms and our basin.
@@ -63,12 +80,15 @@ def check_covalent(
     cos_theta = max(-1.0, min(1.0, cos_theta))
     # get theta
     theta = np.arccos(cos_theta)
+    
+    # wrap atoms in case they both belong to the same atom
+    nearest_atom = nearest_atom % num_atoms
+    neighbor_atom = neighbor_atom % num_atoms
     # If our angle is not above our tolerance, we return as not a covalent bond
     if theta < min_covalent_angle:
         return False, nearest_atom, neighbor_atom
     else:
         return True, nearest_atom, neighbor_atom
-
 
 @njit(parallel=True, cache=True)
 def check_all_covalent(
@@ -126,7 +146,7 @@ def get_feature_edges(
     """
     nx, ny, nz = labeled_array.shape
     # create 3D array to store edges
-    edges = np.zeros_like(labeled_array, dtype=np.bool_)
+    edges = np.zeros((nx, ny, nz), dtype=np.bool_)
     # loop over each voxel in parallel
     for i in prange(nx):
         for j in range(ny):
@@ -135,13 +155,15 @@ def get_feature_edges(
                 if vacuum_mask[i, j, k]:
                     continue
                 # get this voxels feature
-                feature_label = feature_map[labeled_array[i, j, k]]
+                basin = labeled_array[i, j, k]
+                feature_label = feature_map[basin]
                 # iterate over the neighboring voxels
                 for si, sj, sk in neighbor_transforms:
                     # wrap points
                     ii, jj, kk = wrap_point(i + si, j + sj, k + sk, nx, ny, nz)
                     # get neighbors feature label
-                    neigh_feature_label = feature_map[labeled_array[ii, jj, kk]]
+                    neigh_basin = labeled_array[ii, jj, kk]
+                    neigh_feature_label = feature_map[neigh_basin]
                     # if any label is different, the current voxel is an edge.
                     # Note this in our edge array and break
                     # NOTE: we also check that the neighbor is not part of the

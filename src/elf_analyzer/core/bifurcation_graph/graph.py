@@ -195,7 +195,6 @@ class BifurcationGraph:
         # get values of connections
         connection_values = connection_values[unique_indices]
         
-        # breakpoint()
         basin_maxima_grid = np.round(labeler.reference_grid.frac_to_grid(labeler.basin_maxima_frac)).astype(np.int64)
         basin_maxima_grid %= labeler.reference_grid.shape
         
@@ -220,7 +219,20 @@ class BifurcationGraph:
         
         t1 = time.time()
         logging.info(f"Time: {round(t1-t0, 2)}")
+        # run a quick check ensuring that all basins appear as individual irreducible
+        # nodes
+        all_basins = np.zeros(len(basin_maxima_grid), dtype=np.bool_)
+        for basins in feature_basins:
+            if len(basins) != 1:
+                continue
+            all_basins[basins[0]] = True
         
+        if not np.all(all_basins):
+            breakpoint()
+            
+        assert np.all(all_basins), """Not all basins were assigned to irreducible domains. This is a bug!!! Please report to our github:
+            https://github.com/SWeav02/baderkit"""
+
         #######################################################################
         # Get Atoms Surrounded by Each Feature
         #######################################################################
@@ -344,7 +356,7 @@ class BifurcationGraph:
         return graph
     
     @staticmethod
-    def _remove_shallow_reducible_nodes(graph, cutoff=0.05):
+    def _remove_shallow_reducible_nodes(graph, cutoff=0.01):
         reducible_nodes = graph.reducible_nodes.copy()
         reducible_nodes.reverse()
         for node in reducible_nodes:
@@ -413,9 +425,10 @@ class BifurcationGraph:
         feature_map = np.empty(len(labeler.basin_maxima_frac), dtype=np.uint32)
         for node_idx, node in enumerate(nodes):
             feature_map[node.basins] = node_idx
-        
+
         # get feature edges
         neighbor_transforms, _ = labeler.reference_grid.point_neighbor_transforms
+
         edge_mask = get_feature_edges(
             labeled_array=labeler.basin_labels,
             feature_map=feature_map,
@@ -549,8 +562,12 @@ class BifurcationGraph:
         for idx, (feature_type, feature_subtype, label) in enumerate(zip(types, subtypes, labels)):
             
             # only add to legend if this type hasn't been found previously
-            showlegend = feature_type not in already_added_types
-            already_added_types.add(feature_type)
+            showlegend = feature_subtype not in already_added_types
+            already_added_types.add(feature_subtype)
+            if feature_subtype is not None:
+                color = feature_subtype.plot_color
+            else:
+                color = None
 
             if feature_type == "ReducibleNode":
                 # add a circle
@@ -559,11 +576,11 @@ class BifurcationGraph:
                         x=[Xn[idx]],
                         y=[Yn[idx]],
                         mode="markers",
-                        name=f"{feature_subtype}",
+                        name=f"{feature_subtype.value}",
                         marker=dict(
                             symbol="circle-dot",
                             size=18,
-                            color=feature_subtype.plot_color,
+                            color=color,
                             line=dict(color="grey", width=1),
                         ),
                         text=label,
@@ -582,11 +599,11 @@ class BifurcationGraph:
                         x=[x0, x1, x1, x0, x0],
                         y=[y0, y0, y1, y1, y0],
                         fill="toself",
-                        fillcolor=feature_subtype.plot_color,
+                        fillcolor=color,
                         line=dict(color=LINE_COLOR),
                         hoverinfo="text",
                         text=label,
-                        name=f"{feature_subtype}",
+                        name=f"{feature_subtype.value}",
                         mode="lines",
                         opacity=0.8,
                         showlegend=showlegend,
