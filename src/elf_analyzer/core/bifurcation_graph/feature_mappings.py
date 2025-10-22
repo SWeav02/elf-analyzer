@@ -8,13 +8,19 @@ dummy atoms
 from enum import Enum
 import logging
 
-FEATURE_COLORS = {
-    "root": "rgba(128, 128, 128, 1)",  # grey
+DOMAIN_COLORS = {
+    "reducible - root": "rgba(128, 128, 128, 1)",  # grey
     "reducible": "rgba(128, 128, 128, 1)",  # grey
-    "dimension reduction": "rgba(154, 128, 128, 1)",  # redish grey
-    "contained atom reduction": "rgba(128, 128, 154, 1)",  # bluish grey
+    "reducible - domain": "rgba(128, 128, 128, 1)",  # grey
+    "reducible - dimensionality": "rgba(154, 128, 128, 1)",  # redish grey
+    "reducible - contained atoms": "rgba(128, 128, 154, 1)",  # bluish grey
     "irreducible": "rgba(47, 79, 79, 1)", # dark slate gray
-    "shallow": "rgba(47, 79, 79, 1)", # dark slate gray
+    "irreducible - point": "rgba(47, 79, 79, 1)", # dark slate gray
+    "irreducible - ring": "rgba(47, 79, 79, 1)", # dark slate gray
+    "irreducible - cage": "rgba(47, 79, 79, 1)", # dark slate gray
+    }
+
+FEATURE_COLORS = {
     "shell": "rgba(60, 60, 60, 1)", # dark grey
     "deep shell": "rgba(60, 60, 60, 1)", # dark grey
     "core": "rgba(0, 0, 0, 1)", # black
@@ -26,6 +32,7 @@ FEATURE_COLORS = {
     }
 
 FEATURE_DUMMY_ATOMS = {
+    "unknown": "X",
     "shell": "Xs",
     "deep shell": "Xds",
     "core": "Xc",
@@ -42,14 +49,51 @@ class classproperty(property):
     def __get__(self, obj, cls):
         return self.fget(cls)
 
-
-class FeatureSubtype(str, Enum):
+class DomainSubtype(str, Enum):
     reducible = "reducible"
-    root = "root"
-    dim_reduction = "dimension reduction"
-    contained_atom_reduction = "contained atom reduction"
+    root = "reducible - root"
+    reducible_dom = "reducible - domain"
+    reducible_dim = "reducible - dimensionality"
+    reducible_atom = "reducible - contained atoms"
     irreducible = "irreducible"
-    shallow = "shallow"
+    irreducible_point = "irreducible - point"
+    irreducible_ring = "irreducible - ring"
+    irreducible_cage = "irreducible - cage"
+    
+    @classproperty
+    def reducible_types(cls):
+        return [
+            cls.root,
+            cls.reducible,
+            cls.reducible_dom,
+            cls.reducible_dim,
+            cls.reducible_atom,
+        ]
+
+    @classproperty
+    def irreducible_types(cls):
+        return [
+            cls.irreducible,
+            cls.irreducible_point,
+            cls.irreducible_ring,
+            cls.irreducible_cage,
+        ]
+    @classproperty
+    def subtypes(cls):
+        return {
+            "ReducibleNode": cls.reducible_types,
+            "IrreducibleNode": cls.irreducible_types,
+        } 
+    
+    @property
+    def plot_color(self):
+        color = DOMAIN_COLORS.get(self.value, None)
+        if color is None:
+            logging.warning(f"No plot color found for domain of type {self.name}")
+        return color
+
+class FeatureType(str, Enum):
+    unknown = "unknown"
     shell = "shell"
     deep_shell = "deep shell"
     core = "core"
@@ -58,30 +102,6 @@ class FeatureSubtype(str, Enum):
     lone_pair = "lone-pair"
     non_nuclear_attractor = "non-nuclear attractor"
     electride = "electride"
-
-    @classproperty
-    def reducible_types(cls):
-        return [
-            cls.root,
-            cls.reducible,
-            cls.dim_reduction,
-            cls.contained_atom_reduction,
-        ]
-
-    @classproperty
-    def irreducible_types(cls):
-        return [
-            cls.irreducible,
-            cls.shallow,
-            cls.shell,
-            cls.deep_shell,
-            cls.core,
-            cls.covalent,
-            cls.metallic,
-            cls.lone_pair,
-            cls.non_nuclear_attractor,
-            cls.electride,
-        ]
 
     @classproperty
     def atomic_types(cls):
@@ -95,14 +115,7 @@ class FeatureSubtype(str, Enum):
             cls.lone_pair,
             cls.non_nuclear_attractor,
             cls.electride,
-        ]
-
-    @classproperty
-    def subtypes(cls):
-        return {
-            "ReducibleNode": cls.reducible_types,
-            "IrreducibleNode": cls.irreducible_types,
-        }    
+        ] 
     
     @property
     def plot_color(self):

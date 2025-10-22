@@ -8,6 +8,45 @@ from numpy.typing import NDArray
 from baderkit.core.methods.shared_numba import wrap_point
 
 @njit(cache=True)
+def get_atom_dists(
+    frac_coord,
+    atom_frac_coords,
+    atom_cart_coords,
+    frac2cart,
+        ):
+    num_atoms = len(atom_cart_coords)
+
+    atom_dists = np.full(num_atoms, 1e6, dtype=np.float64)
+    atom_vecs = np.empty((num_atoms, 3), dtype=np.float64)
+    
+    # transform the coord to each neighboring unit cell (and the current cell)
+    fi, fj, fk = frac_coord
+    for si in (-1, 0, 1):
+        for sj in (-1, 0, 1):
+            for sk in (-1, 0, 1):
+                ti = fi + si
+                tj = fj + sj
+                tk = fk + sk
+                # convert to cartesian
+                ci = ti * frac2cart[0][0] + tj * frac2cart[1][0] + tk * frac2cart[2][0]
+                cj = ti * frac2cart[0][1] + tj * frac2cart[1][1] + tk * frac2cart[2][1]
+                ck = ti * frac2cart[0][2] + tj * frac2cart[1][2] + tk * frac2cart[2][2]
+                # calculate distance to each atom
+                for i, (ai, aj, ak) in enumerate(atom_cart_coords):
+                    di = ai-ci
+                    dj = aj-cj
+                    dk = ak-ck
+                    dist = ((di)**2 + (dj)**2 + (dk)**2) ** 0.5
+                    # if its lower than previous calculated distances, update
+                    # our entry
+                    if dist <= atom_dists[i]:
+                        # update the nearest value
+                        atom_dists[i] = dist
+                        atom_vecs[i] = (di, dj, dk)
+
+    return atom_dists
+
+@njit(cache=True)
 def check_covalent(
     feature_frac_coord,
     atom_frac_coords,
@@ -15,14 +54,17 @@ def check_covalent(
     frac2cart,
     min_covalent_angle,
         ):
-    num_atoms = len(atom_cart_coords)
-    # first we find the two closest neighbors to this point
+    # first we find the three closest neighbors to this point
     # create arrays to store distances and vectors
-    # BUGFIX: Its possible for the closest and second closest neighbor to be
-    # the same atom. We need to store the closest and second closest image of
-    # each atom (e.g. single atom systems)
-    atom_dists = np.full(num_atoms*2, 1e6, dtype=np.float64)
-    atom_vecs = np.empty((num_atoms*2, 3), dtype=np.float64)
+    first_dist = 1e6
+    second_dist = 1e6
+    third_dist = 1e6
+    
+    first_vec = np.empty(3, dtype=np.float64)
+    second_vec = np.empty(3, dtype=np.float64)
+    
+    first_atom = -1
+    second_atom = -1
     
     # transform the coord to each neighboring unit cell (and the current cell)
     fi, fj, fk = feature_frac_coord
@@ -44,36 +86,40 @@ def check_covalent(
                     dist = ((di)**2 + (dj)**2 + (dk)**2) ** 0.5
                     # if its lower than previous calculated distances, update
                     # our entry
-                    if dist <= atom_dists[i]:
-                        # set the previous value to be the second nearest
-                        atom_dists[i+num_atoms] = atom_dists[i]
-                        atom_vecs[i+num_atoms] = atom_vecs[i]
-                        # update the nearest value
-                        atom_dists[i] = dist
-                        atom_vecs[i] = (di, dj, dk)
-
-    # sort atoms
-    sorted_atoms = np.argsort(atom_dists)
+                    if dist <= first_dist:
+                        # move second to third
+                        third_dist = second_dist
+                        # move first to second
+                        second_dist = first_dist
+                        second_vec[:] = first_vec
+                        second_atom = first_atom
+                        # update first
+                        first_dist = dist
+                        first_vec[:] = (di, dj, dk)
+                        first_atom = i
+                    
+                    elif dist <= second_dist:
+                        # move second to third
+                        third_dist = second_dist
+                        # update second
+                        second_dist = dist
+                        second_vec[:] = (di, dj, dk)
+                        second_atom = i
+                    elif dist < third_dist:
+                        # update third
+                        third_dist = dist
     
-    # Get the nearest and second nearest atoms
-    nearest_atom = sorted_atoms[0]
-    neighbor_atom = sorted_atoms[1]
-    
-    # Bug Fix: We must only have 2 nearest neighbors or this is more like a
-    # non-nuclear attractor. We make sure we don't have a third neighbor
-    neigh_dist = atom_dists[1]
-    next_neigh_dist = atom_dists[2]
-    # check if next neighbor is within 1% of the distance
-    if (next_neigh_dist - neigh_dist) / neigh_dist < 0.01:
-        return False, nearest_atom, neighbor_atom
+    # check if third neighbor is within 1% of second
+    if (third_dist - second_dist) / second_dist < 0.01:
+        return False, first_atom, second_atom
     
     # First we check that we are reasonably close to being along this bond. We
     # do this by checking the angle between the neighboring atoms and our basin.
     # This is corresponds to:
         # θ = arccos((A ⋅ B) / (|A|*|B|))
     # where A and B are the vectors from the feature to each neighboring atom
-    A = atom_vecs[nearest_atom]
-    B = atom_vecs[neighbor_atom]
+    A = first_vec
+    B = second_vec
 
     cos_theta = np.dot(A, B) / (np.linalg.norm(A) * np.linalg.norm(B))
     # make sure our theta is within the bounds of arcos
@@ -81,14 +127,11 @@ def check_covalent(
     # get theta
     theta = np.arccos(cos_theta)
     
-    # wrap atoms in case they both belong to the same atom
-    nearest_atom = nearest_atom % num_atoms
-    neighbor_atom = neighbor_atom % num_atoms
     # If our angle is not above our tolerance, we return as not a covalent bond
     if theta < min_covalent_angle:
-        return False, nearest_atom, neighbor_atom
+        return False, first_atom, second_atom
     else:
-        return True, nearest_atom, neighbor_atom
+        return True, first_atom, second_atom
 
 @njit(parallel=True, cache=True)
 def check_all_covalent(
@@ -227,4 +270,61 @@ def get_min_avg_feat_surface_dists(
     # get average dists
     average_dists = dist_sums / edge_totals
     return dists, average_dists
+
+@njit(cache=True)
+def get_pt_ring_cage(frac_coords, tol=1e-3):
+    """
+    Checks if a set of points is similar to a point, ring, or cage. This is a very
+    rough estimate made only from the maxima. A more rigorous method might incorporate
+    voxels slightly below these values.
+    """
     
+    # if we only have 1 or 2 points we cannot make a ring or cage
+    if len(frac_coords) < 3:
+        return 0
+    # if we have exactly 3 we will always have a ring
+    elif len(frac_coords) == 3:
+        return 1
+
+    # reference coord used for unwrapping
+    ref0 = 0.0
+    ref1 = 0.0
+    ref2 = 0.0
+    ref_set = False
+    
+    # create an array to store unwrapped coords
+    unwrapped_frac_coords = np.empty_like(frac_coords, dtype=np.float64)
+
+    # scan all maxima and pick those that belong to this target_group
+    for idx, (c0, c1, c2) in enumerate(frac_coords):
+
+        # first seen -> set reference for unwrapping
+        if not ref_set:
+            ref0, ref1, ref2 = c0, c1, c2
+            ref_set = True
+
+        # unwrap coordinate relative to reference: unwrapped = coord - round(coord - ref)
+        # Using np.round via float -> use built-in round for numba compatibility
+        # but call round(x) (returns float)
+        unwrapped_frac_coords[idx, 0] = c0 - round(c0 - ref0)
+        unwrapped_frac_coords[idx, 1] = c1 - round(c1 - ref1)
+        unwrapped_frac_coords[idx, 2] = c2 - round(c2 - ref2)
+
+    # get average of points
+    avg_pt = np.zeros(3, dtype=np.float64)
+    for frac_coord in unwrapped_frac_coords:
+        avg_pt += frac_coord
+    avg_pt /= len(unwrapped_frac_coords)
+    
+    # Center points
+    pts = unwrapped_frac_coords - avg_pt
+    # Singular value decomposition (variance across each direction)
+    _, s, vh = np.linalg.svd(pts, full_matrices=False)
+    # Smallest singular value gives out-of-plane deviation
+    deviation = s[-1] / s[0]
+    if deviation < tol:
+        # we are fairly planar and consider this to be a ring
+        return 1
+    else:
+        # we are not planar and consider this a cage
+        return 2

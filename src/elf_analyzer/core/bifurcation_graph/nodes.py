@@ -2,23 +2,28 @@
 
 from abc import ABC, abstractmethod
 from typing import Literal, TypeVar, Dict, Type
+from functools import cached_property
+import logging
 
 import numpy as np
 from numpy.typing import NDArray
 from pymatgen.analysis.local_env import CrystalNN
 
-from elf_analyzer.core.bifurcation_graph.feature_mappings import FeatureSubtype
+from baderkit.core.methods.shared_numba import merge_frac_coords
+
+from elf_analyzer.core.bifurcation_graph.feature_mappings import FeatureType, DomainSubtype
+from elf_analyzer.core.utilities.numba_functions import get_pt_ring_cage, get_atom_dists
 
 Node = TypeVar("Node", bound="NodeBase")    
 
 class NodeBase(ABC):
     
     _registry: Dict[str, Type["NodeBase"]] = {}
-    feature_type = None
     is_reducible = False
     
     label_map = {
-        "type" : "feature_subtype",
+        # "domain type" : "domain_type",
+        "domain subtype" : "domain_subtype",
         "basins" : "basins",
         "dimensionality" : "dimensionality",
         "contained atoms" : "contained_atoms",
@@ -37,7 +42,7 @@ class NodeBase(ABC):
             max_value: float,
             key: int | None = None,
             parent: Node | int | None = None,
-            feature_subtype: str = None,
+            domain_subtype: str = None,
             ):
         
         # set properties that all nodes have
@@ -47,7 +52,7 @@ class NodeBase(ABC):
         self.contained_atoms = np.array(contained_atoms)
         self.min_value = float(min_value)
         self.max_value = float(max_value)
-        self._feature_subtype = feature_subtype
+        self.domain_subtype = domain_subtype
         
 
         # convert integer parents to the corresponding Node object
@@ -80,6 +85,9 @@ class NodeBase(ABC):
         # automatically registers subclasses. Used for convenient from_dict method
         super().__init_subclass__(**kwargs)
         cls._registry[cls.__name__] = cls  # Register subclass automatically
+        # automatically add class name shortcut
+        cls.domain_type = cls.__name__
+        cls.__annotations__["domain_type"] = str
         
     def __eq__(
         self,
@@ -90,6 +98,17 @@ class NodeBase(ABC):
         
         # node indices are unique. Return the comparison between the two
         return self.key == other.key
+    
+    @property
+    def domain_subtype(self) -> DomainSubtype | None:
+        return self._domain_subtype
+    
+    @domain_subtype.setter
+    def domain_subtype(self, value: DomainSubtype | None):
+        if value is None:
+            self._domain_subtype = None
+        else:
+            self._domain_subtype = DomainSubtype(value)
     
     ###########################################################################
     # Graph Related Properties
@@ -140,17 +159,7 @@ class NodeBase(ABC):
     # Feature Related Properties
     ###########################################################################
     
-    @property
-    def feature_subtype(self) -> FeatureSubtype:
-        return self._feature_subtype
-    
-    @feature_subtype.setter
-    def feature_subtype(self, value: FeatureSubtype | str):
-        if not value in FeatureSubtype.subtypes[self.feature_type]:
-            raise ValueError(f"Invalid feature subtype for {self.feature_type} node. Options are {[i for i in FeatureSubtype.subtypes[self.feature_type]]}")
-        self._feature_subtype = FeatureSubtype(value)
-    
-    @property
+    @cached_property
     def depth(self):
         return self.max_value - self.min_value
     
@@ -166,27 +175,10 @@ class NodeBase(ABC):
         return self.max_value - ancestor.max_value
 
     
-    @property
+    @cached_property
     def is_infinite(self):
         return self.dimensionality > 0
     
-    @property
-    def _bader(self):
-        return self.bifurcation_graph.labeler
-    
-    @property
-    def basin_mask(self):
-        assert self._bader is not None, "Masks can only be generated for graphs connected to Bader objects"
-        # We don't cache this as if it was called for many nodes in a large system
-        # there could be some pretty major issues
-        basin_labels = self._bader.basin_labels
-        return np.isin(basin_labels, self.basins)
-    
-    @property
-    def feature_mask(self):
-        assert self._bader is not None, "Masks can only be generated for graphs connected to Bader objects"
-        data = self._bader.reference_grid.total
-        return self.basin_mask & (data >= self.min_value)
     
     ###########################################################################
     # Properties that must be set by children or require additional steps
@@ -198,7 +190,7 @@ class NodeBase(ABC):
             value = getattr(self, attr, None)
             if value is None:
                 continue
-            if tag == "type":
+            if "type" in tag:
                 lines.append(f"{tag}: {value.value}".title())
                 continue
             if isinstance(value, (float, np.floating)):
@@ -227,21 +219,20 @@ class NodeBase(ABC):
         "min_value": float(self.min_value),
         "max_value": float(self.max_value),
         "parent": parent_key,
-        "feature_type": self.feature_type,
-        "feature_subtype": self.feature_subtype,
+        "domain_type": self.domain_type,
+        "domain_subtype": self.domain_subtype,
             }
     
     @classmethod
     def from_dict(cls, bifurcation_graph, node_dict: dict) -> Node:
         # automatic node creation for all inheriting Nodes
-        node_type = node_dict.pop("feature_type")
+        node_type = node_dict.pop("domain_type")
         subclass = cls._registry[node_type]
         return subclass(bifurcation_graph=bifurcation_graph, **node_dict)
     
 
 class ReducibleNode(NodeBase):
     
-    feature_type = "ReducibleNode"
     is_reducible = True
     
     def __init__(self, **kwargs):
@@ -290,23 +281,11 @@ class ReducibleNode(NodeBase):
         del(graph._node_keys[self.key])
         
     def make_irreducible(self):
-        # we want to combine all of the irreducible nodes in this node into one
-        # then delete all children.
-        frac_coords = None
-        charge = 0
-        volume = 0
-        nearest_atom = None
-        atom_distance = 1e300
+        # find the maximum value in children
         max_value = -1e300
         for child in self.deep_children:
             if child.is_reducible:
                 continue
-            charge += child.charge
-            volume += child.volume
-            if child.atom_distance < atom_distance:
-                atom_distance = child.atom_distance
-                frac_coords = child.frac_coords
-                nearest_atom = child.nearest_atom
             if child.max_value > max_value:
                 max_value = child.max_value
         # delete all nodes below this one
@@ -316,7 +295,16 @@ class ReducibleNode(NodeBase):
             node.remove()
         # delete self
         self.remove()
-        
+        # check if the basins in this node form a point, ring, or cage
+        frac_coords = self.bifurcation_graph.basin_maxima_frac[self.basins]
+        irreducible_type = get_pt_ring_cage(frac_coords)
+        if irreducible_type == 0:
+            domain_subtype = DomainSubtype.irreducible_point
+        elif irreducible_type == 1:
+            domain_subtype = DomainSubtype.irreducible_ring
+        else:
+            domain_subtype = DomainSubtype.irreducible_cage
+
         # create a new irreducible node connected to parent
         node = IrreducibleNode(
             key=self.key,
@@ -327,22 +315,19 @@ class ReducibleNode(NodeBase):
             min_value=self.min_value,
             max_value=max_value,
             parent=self.parent,
-            frac_coords=frac_coords, 
-            charge=charge, 
-            volume=volume, 
-            nearest_atom=nearest_atom, 
+            domain_subtype=domain_subtype,
             )
-        node.feature_subtype = "shallow"
+
         return node
 
 class IrreducibleNode(NodeBase):
     
     is_reducible = False
-    feature_type = "IrreducibleNode"
     
     label_map = NodeBase.label_map
     label_map.update(
         {
+        "feature type" : "feature_type",
         "charge" : "charge",
         "volume" : "volume",
         "depth to infinite feature" : "depth_to_infinite",
@@ -360,40 +345,69 @@ class IrreducibleNode(NodeBase):
     
     def __init__(
             self,
-            frac_coords: NDArray[float],
-            charge: float,
-            volume: float,
-            nearest_atom: int,
-            coord_atom_indices: list[int] = None,
+            feature_type: FeatureType | str = FeatureType.unknown,
+            min_surface_dist: float = None,
+            avg_surface_dist: float = None,
             **kwargs,
         ):
         super().__init__(**kwargs)
         
-        self.frac_coords = np.array(frac_coords, dtype=np.float64)
-        self.charge = float(charge)
-        self.volume = float(volume)
-        self.nearest_atom = int(nearest_atom)
+        # these usually need to be labeled, but this allows them to be recreated
+        # from json
+        self.feature_type = feature_type
+        self._min_surface_dist = min_surface_dist
+        self._avg_surface_dist = avg_surface_dist
         
-        self._min_surface_dist = None
-        self._avg_surface_dist = None
-        self._coord_atom_indices = coord_atom_indices
         
     @property
+    def feature_type(self) -> FeatureType | None:
+        return self._feature_type
+    
+    @feature_type.setter
+    def feature_type(self, value: FeatureType | None):
+        if value is None:
+            self._feature_type = None
+        else:
+            self._feature_type = FeatureType(value)
+        
+    @cached_property
+    def charge(self) -> float:
+        return self.bifurcation_graph.basin_charges[self.basins].sum()
+    
+    @cached_property
+    def volume(self) -> float:
+        return self.bifurcation_graph.basin_volumes[self.basins].sum()
+        
+    @cached_property
+    def frac_coords(self) -> NDArray:
+        return self.bifurcation_graph.basin_maxima_frac[self.basins]
+    
+    @cached_property
+    def average_frac_coords(self) -> NDArray:
+        return merge_frac_coords(self.frac_coords)
+    
+    @cached_property
+    def atom_dists(self) -> NDArray[int]:
+        return get_atom_dists(
+            self.average_frac_coords,
+            self.bifurcation_graph.structure.frac_coords,
+            self.bifurcation_graph.structure.cart_coords,
+            self.bifurcation_graph.structure.lattice.matrix,
+            )
+    
+    @cached_property
+    def atom_distance(self) -> float:
+        return np.min(self.atom_dists)
+    
+    @cached_property
+    def nearest_atom(self) -> int:
+        return np.argmin(self.atom_dists)
+        
+    @cached_property
     def nearest_atom_species(self) -> str:
         return self.bifurcation_graph.structure[self.nearest_atom].species_string
     
-    def _calc_atom_dist(self, atom_idx):
-        structure = self.bifurcation_graph.structure
-        atom_frac_coords = structure[atom_idx].frac_coords
-        lattice = structure.lattice
-        dist, _ = lattice.get_distance_and_image(atom_frac_coords, self.frac_coords)
-        return dist
-    
-    @property
-    def atom_distance(self) -> float:
-        return self._calc_atom_dist(self.nearest_atom)
-    
-    @property
+    @cached_property
     def dist_beyond_atom(self) -> float:
         if self.bifurcation_graph.atomic_radii is not None:
             radius = self.bifurcation_graph.atomic_radii[self.nearest_atom]
@@ -401,14 +415,10 @@ class IrreducibleNode(NodeBase):
         
     @property
     def min_surface_dist(self) -> float:
-        if self._min_surface_dist is None:
-            self.bifurcation_graph._calculate_feature_surface_dists()
         return self._min_surface_dist
     
     @property
     def avg_surface_dist(self) -> float:
-        if self._avg_surface_dist is None:
-            self.bifurcation_graph._calculate_feature_surface_dists()
         return self._avg_surface_dist
     
     @property
@@ -418,11 +428,12 @@ class IrreducibleNode(NodeBase):
     @property
     def coord_atom_indices(self) -> list[int]:
         if self._coord_atom_indices is None:
-            if self.feature_subtype in ["core", "shell", "deep shell"]:
-                self._coord_atom_indices = [self.nearest_atom]
+            if self.feature_type in FeatureType.atomic_types:
+                self._coord_atom_indices = [int(self.nearest_atom)]
             else:
                 # TODO: I would really like a better method of doing this as
-                # CrystalNN is very slow in this situation
+                # CrystalNN is very slow in this situation. I can't do them all
+                # at once because I don't want features seeing each other as neighbors
                 feature_structure = self.bifurcation_graph.structure.copy()
                 feature_structure.append("H-", self.frac_coords)
                 cnn = CrystalNN(distance_cutoffs=None)
@@ -455,15 +466,10 @@ class IrreducibleNode(NodeBase):
         
     def to_dict(self) -> dict:
         node_dict = super().to_dict()
-        # convert some attributes to serializable versions
-        node_dict["frac_coords"] = [float(i) for i in self.frac_coords]
-        # add other attributes
+        # get values that can't be calculated directly
         for attr in [
-            "charge",
-            "volume",
-            "nearest_atom",
-            "nearest_atom_species",
-            "atom_distance",
+            "min_surface_dist",
+            "avg_surface_dist"
                 ]:
-            node_dict[attr] = getattr(self, attr)
+            node_dict[attr] = getattr(self, attr, None)
         return node_dict

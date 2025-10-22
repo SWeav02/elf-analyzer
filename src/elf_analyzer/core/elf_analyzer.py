@@ -16,10 +16,11 @@ from baderkit.core import Grid, Bader
 from baderkit.core.toolkit import Format
 
 from elf_analyzer.core.utilities import IonicRadiiTools
-from elf_analyzer.core.utilities.numba_functions import check_all_covalent
+from elf_analyzer.core.utilities.numba_functions import check_all_covalent, get_min_avg_feat_surface_dists, get_feature_edges
 
 from elf_analyzer.core.bifurcation_graph import BifurcationGraph
-from elf_analyzer.core.bifurcation_graph.feature_mappings import FeatureSubtype
+from elf_analyzer.core.bifurcation_graph.feature_mappings import FeatureType, DomainSubtype
+
 
 Self = TypeVar("Self", bound="ElfAnalyzer")
 # TODO:
@@ -155,7 +156,7 @@ class ElfAnalyzer(Bader):
         # This can result in an atom having no assigned core/shell, which will
         # result in nonsense later. We check for this here and throw an error
         assigned_atoms = []
-        for node in self.bifurcation_graph.nodes_by_types(["core", "shell", "deep shell"]):
+        for node in self.bifurcation_graph.get_feature_nodes(FeatureType.atomic_types):
             assigned_atoms.append(node.nearest_atom)
         if (
             len(np.unique(assigned_atoms)) != len(self.structure)
@@ -172,6 +173,12 @@ class ElfAnalyzer(Bader):
                 "At least one ELF feature was not assigned. This is a bug!!! Please report it to our github:"
                 "https://github.com/SWeav02/baderkit/issues"
             )
+        
+        # calculate feature surface distances
+        self._calculate_feature_surface_dists()
+        
+        # get atomic radii
+        self._get_atomic_radii()
                 
     def _initialize_bifurcation_graph(self):
         self._bifurcation_graph = BifurcationGraph.from_labeler(self)
@@ -184,10 +191,12 @@ class ElfAnalyzer(Bader):
         # are in the pseudopotential
         max_dist = self.reference_grid.max_point_dist
         for node in self.bifurcation_graph.unassigned_nodes:
+            if node.domain_subtype == DomainSubtype.irreducible_cage:
+                continue
             if len(node.contained_atoms) != 1:
                 continue
             if node.atom_distance <= max_dist:
-                node.feature_subtype = "core"
+                node.feature_type = FeatureType.core
                 
     def _mark_shells(self):
         logging.info("Marking atomic shells")
@@ -199,8 +208,8 @@ class ElfAnalyzer(Bader):
         # graph was generated due to being very shallow. These will be marked
         # "shallow" and contain one atom
         for node in self.bifurcation_graph.unassigned_nodes:
-            if node.feature_subtype == "shallow" and len(node.contained_atoms) == 1:
-                node.feature_subtype = "shell"
+            if node.domain_subtype == DomainSubtype.irreducible_cage and len(node.contained_atoms) == 1:
+                node.feature_type = "shell"
                 
         # Now we label shells that may be slightly deeper. Regardless of depth,
         # shells will always surround a single atom. To distinguish them from
@@ -256,7 +265,7 @@ class ElfAnalyzer(Bader):
             if self.combine_shells:
                 # convert to an irreducible node
                 node = node.make_irreducible()
-                node.feature_subtype = "shell"
+                node.feature_type = "shell"
             else:
                 for child in node.deep_children:
                     if not child.is_reducible:
@@ -276,7 +285,7 @@ class ElfAnalyzer(Bader):
         for node in graph.unassigned_nodes:
             # don't include nodes with too low of charge (avoids shallow metallics)
             if node.charge > self.min_covalent_charge:
-                valence_frac.append(node.frac_coords)
+                valence_frac.append(node.average_frac_coords)
                 valence_nodes.append(node)
         
         # Convert our cutoff angle to radians
@@ -298,19 +307,18 @@ class ElfAnalyzer(Bader):
                 )
         else:
             nodes_in_tolerance, atom_neighs = [], []
-            
-        # breakpoint()
+
         for node, in_tolerance, (atom0, atom1) in zip(valence_nodes, nodes_in_tolerance, atom_neighs):
             # skip nodes that aren't within our angle tolerance
             if not in_tolerance:
                 continue
-            
+
             # set backup
             contained_atoms = node.ancestors[-1].contained_atoms
             if atom0 in contained_atoms and atom1 in contained_atoms:
                 is_covalent = True
             else:
-                is_covalent = False
+                is_covalent = False # could happen if there are multiple roots
             
             # Sometimes a lone pair happens to align well with an atom that
             # is not part of our covalent system (e.g. CaC2). We can easily 
@@ -318,7 +326,7 @@ class ElfAnalyzer(Bader):
             # containing the full molecule
             included_atoms = node.contained_atoms
             for parent in node.ancestors:
-                if len(parent.contained_atoms) == len(included_atoms) or len(parent.contained_atoms <= 1):
+                if len(parent.contained_atoms) == len(included_atoms) or len(parent.contained_atoms) <= 1:
                     continue
                 # check if all atoms are included in at least one child
                 distinct_atoms = []
@@ -333,7 +341,7 @@ class ElfAnalyzer(Bader):
                 included_atoms = parent.contained_atoms
 
             if is_covalent:
-                node.feature_subtype = "covalent"
+                node.feature_type = FeatureType.covalent
                 # we also go ahead and set the neighboring atoms to avoid some
                 # CrystalNN calculations
                 node.coord_atom_indices = [atom0, atom1]
@@ -351,7 +359,7 @@ class ElfAnalyzer(Bader):
                 if len(parent.contained_atoms) > 0:
                     break
             # if we reached the root, this is not a lone pair
-            if parent.feature_subtype == "root":
+            if parent.domain_subtype == DomainSubtype.root:
                 continue
 
             # track if all the children of this parent are covalent or atomic
@@ -366,20 +374,20 @@ class ElfAnalyzer(Bader):
                 if child.is_reducible:
                     continue
                 
-                if child.feature_subtype in ["covalent"]:
+                if child.feature_type in [FeatureType.covalent]:
                     any_covalent = True
                     all_atomic = False
-                elif child.feature_subtype in ["core", "shell", "deep shell"]:
+                elif child.feature_type in [FeatureType.core, FeatureType.shell, FeatureType.deep_shell]:
                     any_atomic = True
                     all_covalent = False
             
             if not any_covalent and not any_atomic:
                 # This is a deep_shell instead
-                node.feature_subtype = "deep shell"
+                node.feature_type = FeatureType.deep_shell
             
             # if everything is a covalent bond or not assigned, this is a lone pair
             if all_covalent:
-                node.feature_subtype = "lone-pair"
+                node.feature_type = FeatureType.lone_pair
             # otherwise, if all features are atomic we might have a lone-pair but
             # with a few restrictions. It must have reasonably large charge and the
             # parent must surround exactly 1 atom (not be infinite)
@@ -389,7 +397,7 @@ class ElfAnalyzer(Bader):
                     and len(parent.contained_atoms) == 1
                     and node.charge > self.min_covalent_charge 
                     ):
-                node.feature_subtype = "lone-pair"
+                node.feature_type = "lone-pair"
 
     def _mark_metallic(self):
         logging.info("Marking low-depth metal features")
@@ -399,9 +407,9 @@ class ElfAnalyzer(Bader):
         # label anything below our cutoff as a metal
         for node in self.bifurcation_graph.unassigned_nodes:
             if node.depth_to_infinite <= self.max_metal_depth:
-                node.feature_subtype = "metallic"
+                node.feature_type = "metallic"
             else:
-                node.feature_subtype = "non-nuclear attractor"
+                node.feature_type = "non-nuclear attractor"
 
     ###########################################################################
     # Post Graph Construction
@@ -436,8 +444,8 @@ class ElfAnalyzer(Bader):
         structure = self.structure.copy()
         structure.remove_oxidation_states()
         
-        for node in self.bifurcation_graph.nodes_by_types(["metallic", "non-nuclear attractor"]):
-            frac_coords = node.frac_coords
+        for node in self.bifurcation_graph.get_feature_nodes(["metallic", "non-nuclear attractor"]):
+            frac_coords = node.average_frac_coords
             # get attributes to compare conditions to
             condition_test = np.array(
                 [
@@ -450,19 +458,19 @@ class ElfAnalyzer(Bader):
             )
             # if all conditions are met, add a dummy atom
             if np.all(condition_test > conditions):
-                structure.append(FeatureSubtype.electride.dummy_species, frac_coords)
-            elif node.feature_subtype in included_features:
-                structure.append(node.feature_subtype.dummy_species, frac_coords)
+                structure.append(FeatureType.electride.dummy_species, frac_coords)
+            elif node.feature_type in included_features:
+                structure.append(node.feature_type.dummy_species, frac_coords)
         
-        for node in self.bifurcation_graph.nodes_by_types(included_features):
-            structure.append(node.feature_subtype.dummy_species, node.frac_coords)
+        for node in self.bifurcation_graph.get_feature_nodes(included_features):
+            structure.append(node.feature_type.dummy_species, node.average_frac_coords)
         
         return structure
 
 
     def get_feature_structure(
             self, 
-            included_features: list[str] = FeatureSubtype.irreducible_types
+            included_features: list[str] = [i for i in FeatureType],
         ):
         
         # Create a new structure without oxidation states
@@ -470,8 +478,8 @@ class ElfAnalyzer(Bader):
         structure.remove_oxidation_states()
         
         # Add nodes of each type in list
-        for node in self.bifurcation_graph.nodes_by_types(included_features):
-            structure.append(node.feature_subtype.dummy_species, node.frac_coords)
+        for node in self.bifurcation_graph.get_feature_nodes(included_features):
+            structure.append(node.feature_type.dummy_species, node.average_frac_coords)
         
         return structure
     
@@ -488,9 +496,9 @@ class ElfAnalyzer(Bader):
         # with covalent features first.
         frac_coords = self.basin_maxima_frac
         feature_structure = self.structure.copy()
-        for node in self.bifurcation_graph.nodes_by_types(FeatureSubtype.valence_types):
+        for node in self.bifurcation_graph.get_feature_nodes(FeatureType.valence_types):
 
-            if node.feature_subtype == "covalent":
+            if node.feature_type == FeatureType.covalent:
                 species = "Z"
             else:
                 species = "X"
@@ -507,7 +515,46 @@ class ElfAnalyzer(Bader):
             feature_labels=feature_labels,
             feature_structure=feature_structure,
             )
+        self.bifurcation_graph._atomic_radii = radii_tools.atomic_radii
         self._atomic_radii = radii_tools.atomic_radii
+        
+    def _calculate_feature_surface_dists(self):
+        # Calculate the minimum and average distance from each irreducible features
+        # fractional coordinate to its edges. This is often different from the
+        # original basins as we may combine some of them.
+
+        nodes = self.bifurcation_graph.irreducible_nodes
+        
+        # collect frac coords and map basin labels to features
+        frac_coords = [i.average_frac_coords for i in nodes]
+        feature_map = np.empty(len(self.basin_maxima_frac), dtype=np.uint32)
+        for node_idx, node in enumerate(nodes):
+            feature_map[node.basins] = node_idx
+
+        # get feature edges
+        neighbor_transforms, _ = self.reference_grid.point_neighbor_transforms
+
+        edge_mask = get_feature_edges(
+            labeled_array=self.basin_labels,
+            feature_map=feature_map,
+            neighbor_transforms = neighbor_transforms,
+            vacuum_mask=self.vacuum_mask,
+            )
+        
+        # calculate the minimum and average distance to each features surface
+        min_dists, avg_dists = get_min_avg_feat_surface_dists(
+            labels=self.basin_labels,
+            feature_map=feature_map,
+            frac_coords=np.array(frac_coords, dtype=np.float64),
+            edge_mask=edge_mask,
+            matrix=self.reference_grid.matrix,
+            max_value=np.max(self.structure.lattice.abc) * 2,
+            )
+        
+        # set surface distances
+        for node, min_dist, avg_dist in zip(nodes, min_dists, avg_dists):
+            node._min_surface_dist = min_dist
+            node._avg_surface_dist = avg_dist
 
     ###########################################################################
     # Read methods
@@ -617,7 +664,7 @@ class ElfAnalyzer(Bader):
             **writer_kwargs,
             ):
         self.write_feature_basins(
-            self.bifurcation_graph.nodes_by_types(FeatureSubtype.valence_types),
+            self.bifurcation_graph.get_feature_nodes(FeatureType.valence_types),
             directory,
             write_reference,
             use_feature_structure,
@@ -640,7 +687,7 @@ class ElfAnalyzer(Bader):
     #     temp_structure = self.structure.copy()
     #     temp_structure.add_oxidation_state_by_guess()
         
-    #     nodes = self.bifurcation_graph.nodes_by_types(["metallic", "bare electron"])
+    #     nodes = self.bifurcation_graph.get_feature_nodes(["metallic", "bare electron"])
     #     for node in track(nodes, description="Calculating bare electron character"):
 
     #         # We want to get a metric of how "bare" each feature is. To do this,

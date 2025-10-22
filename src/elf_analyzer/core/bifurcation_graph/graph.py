@@ -6,12 +6,13 @@ import time
 import itertools
 
 import numpy as np
+from numpy.typing import NDArray
 import plotly.graph_objects as go
 
 from baderkit.core import Bader, Structure
 
 from elf_analyzer.core.bifurcation_graph.nodes import IrreducibleNode, ReducibleNode, NodeBase
-from elf_analyzer.core.bifurcation_graph.feature_mappings import LINE_COLOR, FeatureSubtype
+from elf_analyzer.core.bifurcation_graph.feature_mappings import LINE_COLOR, DomainSubtype, FeatureType
 # from elf_analyzer.core.utilities import IonicRadiiTools
 from elf_analyzer.core.bifurcation_graph.infinite_feature_numba import (
     find_domain_connections,
@@ -21,7 +22,7 @@ from elf_analyzer.core.bifurcation_graph.infinite_feature_numba import (
 from elf_analyzer.core.bifurcation_graph.surrounded_atoms_numba import (
     get_features_surrounding_atoms,
     )
-from elf_analyzer.core.utilities.numba_functions import get_min_avg_feat_surface_dists, get_feature_edges
+
 
 class BifurcationGraph:
     """
@@ -31,29 +32,25 @@ class BifurcationGraph:
     
     def __init__(
             self, 
-            structure: Structure, 
-            labeler: Bader = None, 
-            labeler_type = None,
-            atomic_radii = None,
+            structure: Structure,
+            labeler_type: str,
+            basin_maxima_frac: NDArray[float],
+            basin_charges: NDArray[float],
+            basin_volumes: NDArray[float],
+            atomic_radii: NDArray[float] = None,
             ):
         self._root_nodes = []
         self._nodes = []
         self._node_keys = {}
         
         self.structure = structure
-        
-        # optional labeler parameter
-        self.labeler = labeler
-        
-        # optional labeler parameter for tracking what method was used to label
-        # features
-        if labeler is None:
-            self.labeler_type = labeler_type
-        else:
-            self.labeler_type = labeler.__class__.__name__
+        self.labeler_type = labeler_type
+        self.basin_maxima_frac = basin_maxima_frac
+        self.basin_charges = basin_charges
+        self.basin_volumes = basin_volumes
         
         # optional radii parameter that must be set
-        self._atomic_radii = None
+        self._atomic_radii = atomic_radii
 
     def __iter__(self):
         return iter(self.nodes)
@@ -91,45 +88,53 @@ class BifurcationGraph:
     
     @property
     def unassigned_nodes(self):
-        return [i for i in self if i.feature_subtype is None or i.feature_subtype == "shallow"]
+        return [i for i in self if not i.is_reducible and i.feature_type in (None, FeatureType.unknown)]
     
     @property
     def atomic_radii(self):
         if self._atomic_radii is None:
-            if self.labeler is not None:
-                self._atomic_radii = self.labeler.atomic_radii
+            logging.warning("Radii must be set by a labeler or alternative method")
         return self._atomic_radii
     
-    def nodes_by_type(self, feature_subtype: str):
-        return [i for i in self if i.feature_subtype == feature_subtype]
-    
-    def nodes_by_types(self, feature_subtypes: list[str]):
-        return [i for i in self if i.feature_subtype in feature_subtypes]
+    def get_feature_nodes(self, feature_types: list[str]):
+        return [i for i in self if not i.is_reducible and i.feature_type in feature_types]
     
     def to_dict(self) -> dict:
-        radii = self.atomic_radii
-        if radii is not None:
-            radii = [float(i) for i in radii]
         graph_dict =  {
             "nodes": [i.to_dict() for i in self],
             "structure": self.structure.to_json(),
             "labeler_type": self.labeler_type,
-            "atomic_radii": radii,
             }
+        # convert array props to python list/int for json
+        for prop_str in [
+                "basin_maxima_frac",
+                "basin_charges",
+                "basin_volumes",
+                "atomic_radii",
+                ]:
+            prop = getattr(self, prop_str, None)
+            if prop is not None:
+                prop = prop.tolist()
+            graph_dict[prop_str] = prop
 
         return graph_dict
     
     @classmethod
     def from_dict(cls, graph_dict: dict):
-        nodes = graph_dict["nodes"]
-        structure = Structure.from_str(graph_dict["structure"], fmt="json")
-        labeler_type = graph_dict["labeler_type"]
-        atomic_radii = graph_dict["atomic_radii"]
-        if atomic_radii is not None:
-            atomic_radii = np.array(atomic_radii, dtype=np.float64)
+        nodes = graph_dict.pop("nodes")
+        graph_dict["structure"] = Structure.from_str(graph_dict["structure"], fmt="json")
+        for prop_str in [
+                "basin_maxima_frac",
+                "basin_charges",
+                "basin_volumes",
+                "atomic_radii",
+                ]:
+            prop = graph_dict.get(prop_str, None)
+            if prop is not None:
+                graph_dict[prop_str] = np.array(prop, dtype=np.float64)
         
         # create our initial graph object
-        graph = cls(structure=structure, labeler_type=labeler_type, atomic_radii=atomic_radii)
+        graph = cls(**graph_dict)
         
         # add nodes
         for node_dict in nodes:
@@ -283,7 +288,13 @@ class BifurcationGraph:
         #######################################################################
         # Construct Graph
         #######################################################################    
-        graph = cls(structure=labeler.structure, labeler=labeler)
+        graph = cls(
+            structure=labeler.structure,
+            labeler_type=labeler.__class__.__name__,
+            basin_maxima_frac=labeler.basin_maxima_frac,
+            basin_charges=labeler.basin_charges,
+            basin_volumes=labeler.basin_volumes,
+            )
         node_keys = []
         for feat_idx in range(len(feature_basins)):
             if feature_parents[feat_idx] == -1:
@@ -301,16 +312,11 @@ class BifurcationGraph:
                     min_value=feature_min_values[feat_idx], 
                     max_value=feature_max_values[feat_idx],
                     parent=parent,
+                    domain_subtype=DomainSubtype.reducible
                     )
             
             else:
-                # this is an irreducible feature. Get additional information
-                basin_idx = feature_basins[feat_idx][0]
-                frac_coords = labeler.basin_maxima_frac[basin_idx]
-                charge = labeler.basin_charges[basin_idx]
-                volume = labeler.basin_volumes[basin_idx]
-                nearest_atom = labeler.basin_atoms[basin_idx]
-
+                # this is an irreducible feature
                 node = IrreducibleNode(
                     bifurcation_graph=graph,
                     basins=feature_basins[feat_idx], 
@@ -318,11 +324,8 @@ class BifurcationGraph:
                     contained_atoms=feature_atoms[feat_idx], 
                     min_value=feature_min_values[feat_idx], 
                     max_value=feature_max_values[feat_idx],
-                    nearest_atom=nearest_atom,
-                    frac_coords=frac_coords,
-                    charge=charge,
-                    volume=volume,
                     parent=parent,
+                    domain_subtype=DomainSubtype.irreducible_point
                     )
 
             node_keys.append(node.key)
@@ -331,16 +334,17 @@ class BifurcationGraph:
         for node in graph.reducible_nodes:
             parent = node.parent
             if parent is None:
-                node.feature_subtype = "root"
+                node.domain_subtype = DomainSubtype.root
                 continue
             # if the number of basins changes, this is a standard reducible domain
             elif len(parent.basins) != len(node.basins):
-                node.feature_subtype = "reducible"
+                node.domain_subtype = DomainSubtype.reducible_dom
             # check for dimension change
             elif parent.dimensionality != node.dimensionality:
-                node.feature_subtype = "dimension reduction"
+                node.domain_subtype = DomainSubtype.reducible_dim
+            # finally check for atom change
             elif len(parent.contained_atoms) != len(node.contained_atoms):
-                node.feature_subtype = "contained atom reduction"
+                node.domain_subtype = DomainSubtype.reducible_atom
         
         # sometimes we get extremely shallow reducible features that seem to
         # result from voxelation. Their depth is only one significant figure
@@ -408,74 +412,17 @@ class BifurcationGraph:
         # now we combine all of the nodes 
         for node in nodes_to_combine:
             node.make_irreducible()
-                
-    def _calculate_feature_surface_dists(self):
-        # Calculate the minimum and average distance from each irreducible features
-        # fractional coordinate to its edges. This may be different from the
-        # original basins because we may have merged some of them
-        if self.labeler is None:
-            logging.warning("Surface distances can only be calculated when a graph is created using a labeler (e.g. ElfAnalyzer)")
-            return
-        
-        labeler = self.labeler
-        nodes = self.irreducible_nodes
-        
-        # collect frac coords and map basin labels to features
-        frac_coords = [i.frac_coords for i in nodes]
-        feature_map = np.empty(len(labeler.basin_maxima_frac), dtype=np.uint32)
-        for node_idx, node in enumerate(nodes):
-            feature_map[node.basins] = node_idx
-
-        # get feature edges
-        neighbor_transforms, _ = labeler.reference_grid.point_neighbor_transforms
-
-        edge_mask = get_feature_edges(
-            labeled_array=labeler.basin_labels,
-            feature_map=feature_map,
-            neighbor_transforms = neighbor_transforms,
-            vacuum_mask=labeler.vacuum_mask,
-            )
-        
-        # calculate the minimum and average distance to each features surface
-        min_dists, avg_dists = get_min_avg_feat_surface_dists(
-            labels=labeler.basin_labels,
-            feature_map=feature_map,
-            frac_coords=np.array(frac_coords, dtype=np.float64),
-            edge_mask=edge_mask,
-            matrix=labeler.reference_grid.matrix,
-            max_value=np.max(self.structure.lattice.abc) * 2,
-            )
-        
-        # set surface distances
-        for node, min_dist, avg_dist in zip(nodes, min_dists, avg_dists):
-            node.min_surface_dist = min_dist
-            node.avg_surface_dist = avg_dist
         
     def get_plot(self) -> go.Figure:
         """
         Returns a plotly figure
         """
-        #######################################################################
-        # X Values 
-        #######################################################################
-        indices = [] # The key for each node
-        Xn = [] # The X value where the node appears
-        Xn1 = []  # The X value where the node disappears
-        labels = [] # Strings summarizing node features
-        types = [] # The type of feature (reducible, irreducible)
-        subtypes = [] # The subtype of feature (reducible, dim change, core, covalent, etc.)
-        for i, node in enumerate(self):
-            # get info for each node
-            labels.append(node.plot_label)
-            types.append(node.feature_type)
-            subtypes.append(node.feature_subtype)
-            indices.append(node.key)
-            Xn.append(round(node.min_value, 4))
-            Xn1.append(max(node.max_value, node.max_value - node.depth + 0.01))
         
         #######################################################################
         # Y Values 
         #######################################################################
+        
+        indices = [i.key for i in self]
         
         def assign_y_positions(node, y_counter, y_positions):
             # This function iteratively loops starting from the root node and
@@ -513,9 +460,14 @@ class BifurcationGraph:
         # Get the height of each irreducible node
         y_division = max_y / len(self.irreducible_nodes)
 
+        #######################################################################
+        # Lines
+        #######################################################################
         # Now we need to get the lines that will be used for each edge. These will use
         # a nested lists where each edge has one entry and the sub-lists contain the
         # two x and y entries for each edge.
+        Xn = [round(i.min_value,4) for i in self]
+        Xn1 = [round(i.max_value,4) for i in self]
         Xe = []
         Ye = []
         for node in self.reducible_nodes:
@@ -548,47 +500,42 @@ class BifurcationGraph:
                 hoverinfo="none",
             )
         )
-
-        # convert lists to numpy arrays for easy querying.
-        types = np.array(types)
-        labels = np.array(labels)
-        Xn = np.array(Xn)
-        Xn1 = np.array(Xn1)
+        
+        #######################################################################
+        # Nodes
+        #######################################################################
+       
+        # tracker for legend
+        already_added_types = set()
+        # y positions for boxes
         Yn = np.array(Yn)
         Yn0 = Yn - y_division / 3
         Yn1 = Yn + y_division / 3
-        already_added_types = set()
-
-        for idx, (feature_type, feature_subtype, label) in enumerate(zip(types, subtypes, labels)):
-            
-            # only add to legend if this type hasn't been found previously
-            showlegend = feature_subtype not in already_added_types
-            already_added_types.add(feature_subtype)
-            if feature_subtype is not None:
-                color = feature_subtype.plot_color
-            else:
-                color = None
-
-            if feature_type == "ReducibleNode":
+        for idx, node in enumerate(self):
+            if node.is_reducible:
+                showlegend = node.domain_subtype not in already_added_types
+                already_added_types.add(node.domain_subtype)
                 # add a circle
                 fig.add_trace(
                     go.Scatter(
                         x=[Xn[idx]],
                         y=[Yn[idx]],
                         mode="markers",
-                        name=f"{feature_subtype.value}",
+                        name=f"{node.domain_subtype.value}",
                         marker=dict(
                             symbol="circle-dot",
                             size=18,
-                            color=color,
+                            color=node.domain_subtype.plot_color,
                             line=dict(color="grey", width=1),
                         ),
-                        text=label,
+                        text=node.plot_label,
                         hoverinfo="text",
                         showlegend=showlegend,
                     )
                 )
             else:
+                showlegend = node.feature_type not in already_added_types
+                already_added_types.add(node.feature_type)
                 # add a rectangle
                 x0 = Xn[idx]
                 x1 = Xn1[idx]
@@ -599,17 +546,20 @@ class BifurcationGraph:
                         x=[x0, x1, x1, x0, x0],
                         y=[y0, y0, y1, y1, y0],
                         fill="toself",
-                        fillcolor=color,
+                        fillcolor=node.feature_type.plot_color,
                         line=dict(color=LINE_COLOR),
                         hoverinfo="text",
-                        text=label,
-                        name=f"{feature_subtype.value}",
+                        text=node.plot_label,
+                        name=f"{node.feature_type.value}",
                         mode="lines",
                         opacity=0.8,
                         showlegend=showlegend,
                     )
                 )
 
+        #######################################################################
+        # Layout
+        #######################################################################
         
         min_x = min(Xn)
         max_x = max(Xn1)
